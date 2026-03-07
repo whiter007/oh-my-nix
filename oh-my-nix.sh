@@ -389,9 +389,15 @@ function install(){
                 fi
             }
             function install_nix(){
-                if command -v nix >/dev/null 2>&1; then
+                # 更全面的检测：检查命令是否存在或/nix目录是否存在
+                if command -v nix >/dev/null 2>&1 || [ -d "/nix" ] && [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then
                     echo "nix 已安装，跳过安装"
-                    source ~/.nix-profile/etc/profile.d/nix.sh
+                    # 尝试加载nix环境
+                    if [ -f ~/.nix-profile/etc/profile.d/nix.sh ]; then
+                        source ~/.nix-profile/etc/profile.d/nix.sh
+                    elif [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then
+                        source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                    fi
                     return 0
                 fi
                 echo "正在安装 nix"
@@ -413,7 +419,12 @@ function install(){
                 else
                     NIX_INSTALLER_YES=1 bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add --daemon
                 fi
-                source ~/.nix-profile/etc/profile.d/nix.sh
+                # 尝试加载nix环境
+                if [ -f ~/.nix-profile/etc/profile.d/nix.sh ]; then
+                    source ~/.nix-profile/etc/profile.d/nix.sh
+                elif [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then
+                    source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                fi
             }
             install_utils
             install_nix
