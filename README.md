@@ -3,11 +3,11 @@
 通过执行oh-my-nix.sh脚本，即可完成nix的安装和配置，一键还原您的单机配置
 
 # 快速使用
+```bash
 git clone https://github.com/whiter007/oh-my-nix.git
-
 cd oh-my-nix/
-
 bash oh-my-nix.sh
+```
 
 # 项目期望
 1. 能够以root、sudo用户和普通用户下执行
