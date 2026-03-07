@@ -4,7 +4,9 @@
 
 # 快速使用
 git clone https://github.com/whiter007/oh-my-nix.git
+
 cd oh-my-nix/
+
 bash oh-my-nix.sh
 
 # 项目期望
