@@ -80,10 +80,9 @@
               sudoUser = builtins.getEnv "SUDO_USER";
               normalUser = builtins.getEnv "USER";
             in
-            if sudoUser != "" then sudoUser                                  # 1. sudo执行时
-            # else if normalUser != "" && normalUser != "root" then normalUser # 2. 普通执行时
-            # else "default-user";                                             # 3. root执行时
-            else normalUser;                                                 # 4. 其他情况
+            if sudoUser != "" then sudoUser          # 1. sudo执行时
+            else if normalUser != "" then normalUser # 2. 普通执行时
+            else "root";                             # 3. root执行时
         in
         {
           homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
@@ -91,7 +90,6 @@
             extraSpecialArgs = { inherit inputs username myNixosVersion; };
             modules = [
               { nixpkgs.config.allowUnfree = true; } # TODO: 可以修改
-              ./nix-settings.nix
               ./home.nix
             ];
           };

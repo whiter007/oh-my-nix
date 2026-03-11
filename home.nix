@@ -13,8 +13,8 @@ in
       (modulesPath + /ssh.nix) # 基础
       (modulesPath + /shell/shells.nix) # 终端配置
       (modulesPath + /shell/starship.nix) # 终端美化和加速
-      (modulesPath + /shell/direnv.nix) # 终端自动化工具
-      (modulesPath + /shell/devenv.nix) # 终端自动化工具
+      # (modulesPath + /shell/direnv.nix) # 终端自动化工具
+      # (modulesPath + /shell/devenv.nix) # 终端自动化工具
       # (modulesPath + /build-dep/c.nix) # C语言编译器
       # (modulesPath + /build-dep/python.nix)
       # (modulesPath + /editer/neovim.nix) # 终端编辑器 444.5 MiB
