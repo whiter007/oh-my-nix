@@ -326,8 +326,19 @@ function install(){
         echo ""
         echo "========= 开始安装 =========="
         echo "1. 安装 nix"
-        # 根据结果执行后续操作
-        if [ "$WHICH_DISTRO_ENV" != "nixos" ]; then
+        if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
+            echo "当前为NixOS，跳过安装nix"
+            if command -v git >/dev/null 2>&1; then
+                echo "git 已安装，跳过安装"
+            else
+                echo "正在安装 git"
+                sudo nix --extra-experimental-features 'nix-command flakes' profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz git --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
+                echo 正在查看当前profile列表：
+                nix --extra-experimental-features 'nix-command flakes' profile list
+            fi
+        elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
+            : # 无操作
+        else                                           # linux环境
             # 检查 nix 是否已安装
             if command -v nix >/dev/null 2>&1; then
                 echo "nix 已安装，跳过安装"
@@ -397,22 +408,16 @@ function install(){
             # 检查nix是否已正确安装。TODO：增加darwin环境检查nix安装的脚本，并且解决在linux环境的检查问题
             function check_nix_install(){
                 NEED_TO_INSTALL_NIX=true
-                if [[ $IS_SUDO_USER == false ]] && [[ $IS_ROOT_USER == false ]]; then #普通用户执行
-                    if [ -f ~/.nix-profile/etc/profile.d/nix.sh ]; then
-                        echo "nix已安装，检测到/home/$USERNAME/.nix-profile/etc/profile.d/nix.sh"
-                        source ~/.nix-profile/etc/profile.d/nix.sh
-                        NEED_TO_INSTALL_NIX=false
-                    fi
-                elif [ "$IS_SUDO_USER" == "true" ]; then                              #sudo用户执行
-                    if [ -f /home/$USERNAME/.nix-profile/etc/profile.d/nix.sh ]; then
-                        echo "nix已安装，检测到/home/$USERNAME/.nix-profile/etc/profile.d/nix.sh"
-                        source /home/$USERNAME/.nix-profile/etc/profile.d/nix.sh
-                        NEED_TO_INSTALL_NIX=false
-                    fi
-                else                                                                  #root用户执行
+                if [[ $IS_ROOT_USER == true ]]; then # root用户执行
                     if [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then
                         echo "nix已安装，检测到/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
                         source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                        NEED_TO_INSTALL_NIX=false
+                    fi
+                else                                 # 普通用户和sudo用户执行
+                    if [ -f /home/$USERNAME/.nix-profile/etc/profile.d/nix.sh ]; then
+                        echo "nix已安装，检测到/home/$USERNAME/.nix-profile/etc/profile.d/nix.sh"
+                        source /home/$USERNAME/.nix-profile/etc/profile.d/nix.sh
                         NEED_TO_INSTALL_NIX=false
                     fi
                 fi
@@ -425,10 +430,10 @@ function install(){
             function install_nix(){
                 # 如果是普通用户执行，执行单用户安装
                 # 如果是root或者sudo用户执行，执行守护进程安装
-                if [[ $IS_SUDO_USER == false ]] && [[ $IS_ROOT_USER == false ]]; then
-                    bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add
-                else
+                if [[ $IS_ROOT_USER == true ]]; then
                     NIX_INSTALLER_YES=1 bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add --daemon
+                else
+                    bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add
                 fi
                 # 尝试加载nix环境
                 if [ -f ~/.nix-profile/etc/profile.d/nix.sh ]; then
@@ -442,41 +447,59 @@ function install(){
             if [[ $NEED_TO_INSTALL_NIX == true ]]; then
                 install_nix
             fi
-        else
-            echo "当前为NixOS，跳过安装nix"
-            if command -v git >/dev/null 2>&1; then
-                echo "git 已安装，跳过安装"
-            else
-                echo "正在安装 git"
-                sudo nix --extra-experimental-features 'nix-command flakes' profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz git --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
-                echo 正在查看当前profile列表：
-                nix --extra-experimental-features 'nix-command flakes' profile list
-            fi
         fi
     }
     # 配置nix源。单用户或nix已稳定。TODO：待确认多用户安装和darwin环境。
     function nix_config(){
         echo "2. 配置nix源"
         # 配置系统nix源
-        if [ "$IS_ROOT_USER" == "true" ]; then
-            echo "root用户执行，为普通用户 $USERNAME 配置nix源"
-            su - "$USERNAME" -c "echo 正在配置flake的nixpkgs仓库...; nix --extra-experimental-features 'nix-command flakes' registry add nixpkgs https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz"
-            su - "$USERNAME" -c "echo 正在配置nix-系列命令的nixpkgs仓库...; nix-channel --add https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz nixpkgs; nix-channel --update"
-        else
-            echo 正在配置flake的nixpkgs仓库...
-            nix --extra-experimental-features 'nix-command flakes' registry add nixpkgs https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz
-            echo 正在配置nix-系列命令的nixpkgs仓库...
-            nix-channel --add https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz nixpkgs
-            nix-channel --update
-        fi
+        echo 正在配置flake的nixpkgs仓库...
+        nix --extra-experimental-features 'nix-command flakes' registry add nixpkgs https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz
+        echo 正在配置nix-系列命令的nixpkgs仓库...
+        nix-channel --add https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz nixpkgs
+        nix-channel --update
 
         # 脚本nix命令配置
         export NIX_CONFIG="experimental-features = nix-command flakes
 substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
     }
+    function nix_setting(){
+        if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
+            : # 无操作
+        elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
+            : # 无操作
+        else                                           # linux环境
+            # 配置nix
+            echo "正在创建nix配置..."
+            if [ "$IS_ROOT_USER" == "true" ]; then
+                : # 无操作
+            else
+                # 创建nix配置目录
+                mkdir -p /home/$USERNAME/.config/nix
+                tee /home/$USERNAME/.config/nix/nix.conf << 'EOF'
+experimental-features = nix-command flakes # ✅ 启用flakes特性
+substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://cache.nixos.org # ✅ 使用清华镜像作为二进制缓存源
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= # ✅ 可信任的公钥，用于验证下载的包
+builders-use-substitutes = true # ✅ 优先使用远程主机的构建，大幅缩短构建时间
+auto-optimise-store = true # ✅ 相同内容链接同一文件，减少重复存储
+sandbox-fallback = false # ✅ 始终使用沙盒，失败不重复
+EOF
+            fi
+        fi
+    }
     function flake_load(){
         echo "3. 复制flake配置"
-        if [ "$WHICH_DISTRO_ENV" != "nixos" ]; then
+        if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
+            if [[ $IS_LIVE_CD_ENV == true ]]; then
+                echo "已复制/run/media/nixos/Ventoy/nix目录下的flake配置到/etc/nixos/"
+                sudo cp -r ~/* /etc/nixos/
+            else
+                echo "已复制当前目录下的flake配置到/etc/nixos/"
+                sudo cp -r ./* /etc/nixos/
+            fi
+        elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
+            : # 无操作
+        else                                           # linux环境
             if [ "$IS_ROOT_USER" == "true" ]; then
                 echo "root用户执行，复制配置到普通用户 $USERNAME 的目录"
                 TARGET_DIR=$(eval echo ~"$USERNAME")/.config/home-manager
@@ -484,23 +507,15 @@ substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://m
                 echo "已复制当前目录下的flake配置到 $TARGET_DIR"
                 cp -r ./* "$TARGET_DIR"
             else
-                mkdir -p ~/.config/home-manager/
-                echo "已复制当前目录下的flake配置到 $(realpath ~/.config/home-manager)/"
-                cp -r ./* ~/.config/home-manager/
+                mkdir -p /home/$USERNAME/.config/home-manager/
+                echo "已复制当前目录下的flake配置到 /home/$USERNAME/.config/home-manager/"
+                cp -r ./* /home/$USERNAME/.config/home-manager/
             fi
-        elif [[ $IS_LIVE_CD_ENV == true ]]; then
-            echo "已复制/run/media/nixos/Ventoy/nix目录下的flake配置到/etc/nixos/"
-            sudo cp -r /run/media/nixos/Ventoy/nix/* /etc/nixos/
-        else
-            echo "已复制当前目录下的flake配置到/etc/nixos/"
-            sudo cp -r ./* /etc/nixos/
         fi
     }
     function flake_apply(){
         echo "4. 应用flake配置"
-        if [ "$WHICH_DISTRO_ENV" == "macos" ]; then
-            echo "macOS环境，正在应用home-manager配置（未实现）"
-        elif [ "$WHICH_DISTRO_ENV" == "nixos" ]; then
+        if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
             if [ "$IS_LIVE_CD_ENV" == "true" ]; then
                 echo "NixOS Live CD环境，正在应用flake配置"
                 sudo nixos-rebuild switch --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store" --flake /etc/nixos/ --impure
@@ -508,26 +523,28 @@ substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://m
                 echo "NixOS环境，正在应用flake配置"
                 sudo nixos-rebuild switch --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store" --flake /etc/nixos/ --impure
             fi
-        else
+        elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
+            : # 无操作
+        else                                           # linux环境
             echo "非NixOS环境，正在应用home-manager配置"
-            if [ "$IS_ROOT_USER" == "true" ]; then
+            if [[ $IS_ROOT_USER == true ]]; then
                 echo "root用户执行，切换到普通用户 $USERNAME 应用配置"
-                su - "$USERNAME" -c "NIX_CONFIG='experimental-features = nix-command flakes
-substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store' nix run nixpkgs#home-manager -- switch --flake ~/.config/home-manager/.#$USERNAME --impure -b backup"
+                su - "$USERNAME" -c "nix run nixpkgs#home-manager -- switch --flake ~/.config/home-manager/.#$USERNAME --impure -b backup"
             else
                 nix run nixpkgs#home-manager -- switch --flake ~/.config/home-manager --impure -b backup
             fi
         fi
     }
     nix_install
-    nix_config
+    nix_config # 配置nix源和脚本变量
+    nix_setting # 配置nix脚本安装后的nix
     flake_load
     flake_apply
 }
 function done(){
     echo "完成安装"
-    if [ "$IS_ROOT_USER" == "true" ]; then
-        su - "$USERNAME" -c "nix --extra-experimental-features 'nix-command flakes' --option substituters \"https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store\" run nixpkgs#fastfetch"
+    if [[ $IS_ROOT_USER == true ]]; then
+        su - "$USERNAME" -c "nix run nixpkgs#fastfetch"
     else
         nix run nixpkgs#fastfetch
     fi

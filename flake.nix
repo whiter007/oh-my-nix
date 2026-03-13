@@ -73,16 +73,16 @@
             else "nixos";           # 2. 兜底使用 "nixos"
           # nixos版本配置
           myNixosVersion = "25.11";
-
           # 当前用户名（优先使用 环境变量中的用户名；不支持时回退到 default-user）
-          username =
-            let
-              sudoUser = builtins.getEnv "SUDO_USER";
-              normalUser = builtins.getEnv "USER";
-            in
-            if sudoUser != "" then sudoUser          # 1. sudo执行时
-            else if normalUser != "" then normalUser # 2. 普通执行时
-            else "root";                             # 3. root执行时
+          # username =
+          #   let
+          #     sudoUser = builtins.getEnv "SUDO_USER";
+          #     normalUser = builtins.getEnv "USER";
+          #   in
+          #   if sudoUser != "" then sudoUser          # 1. sudo执行时
+          #   else if normalUser != "" then normalUser # 2. 普通执行时
+          #   else "root";                             # 3. root执行时
+          username = builtins.getEnv "USER";
         in
         {
           homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
@@ -91,6 +91,7 @@
             modules = [
               { nixpkgs.config.allowUnfree = true; } # TODO: 可以修改
               ./home.nix
+
             ];
           };
           # darwinConfigurations.${username} = nix-darwin.lib.darwinSystem {
