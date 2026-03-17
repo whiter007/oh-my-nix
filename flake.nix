@@ -82,21 +82,21 @@
           #   if sudoUser != "" then sudoUser          # 1. sudo执行时
           #   else if normalUser != "" then normalUser # 2. 普通执行时
           #   else "root";                             # 3. root执行时
-          username = builtins.getEnv "USER";
+          userName = builtins.getEnv "USER"; # root执行为root，其他为用户名
         in
         {
-          homeConfigurations."${username}" = home-manager.lib.homeManagerConfiguration {
+          homeConfigurations."${userName}" = home-manager.lib.homeManagerConfiguration {
             inherit pkgs;
-            extraSpecialArgs = { inherit inputs username myNixosVersion; };
+            extraSpecialArgs = { inherit inputs userName myNixosVersion; };
             modules = [
               { nixpkgs.config.allowUnfree = true; } # TODO: 可以修改
               ./home.nix
 
             ];
           };
-          # darwinConfigurations.${username} = nix-darwin.lib.darwinSystem {
+          # darwinConfigurations.${userName} = nix-darwin.lib.darwinSystem {
           #   inherit pkgs;
-          #   extraSpecialArgs = { inherit inputs username myNixosVersion; };
+          #   extraSpecialArgs = { inherit inputs userName myNixosVersion; };
           #   modules = [
           #     { nixpkgs.config.allowUnfree = true; }
           #     ./home.nix
@@ -104,7 +104,7 @@
           # };
           nixosConfigurations."${hostname}" = nixpkgs.lib.nixosSystem {
             inherit system;
-            specialArgs = { inherit inputs username myNixosVersion; };
+            specialArgs = { inherit inputs userName myNixosVersion; };
             modules = [
               # ./nixos.nix
               ./configuration.nix
@@ -115,8 +115,8 @@
                 home-manager = {
                   useGlobalPkgs = true;
                   useUserPackages = true;
-                  extraSpecialArgs = { inherit inputs username myNixosVersion; };
-                  users.${username} = {
+                  extraSpecialArgs = { inherit inputs userName myNixosVersion; };
+                  users.${userName} = {
                     imports =
                       [
                         ./home.nix

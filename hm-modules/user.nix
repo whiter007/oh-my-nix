@@ -1,8 +1,8 @@
-{ config, pkgs, lib, username, myNixosVersion, ... }:
+{ config, pkgs, lib, userName, myNixosVersion, ... }:
 
 {
-  home.username = "${username}"; # ⚠️不要删除这一行
-  home.homeDirectory = "/home/${username}"; # ⚠️不要删除这一行
+  home.username = "${userName}"; # ⚠️不要删除这一行
+  home.homeDirectory = "/home/${userName}"; # ⚠️不要删除这一行
   home.stateVersion = "${myNixosVersion}"; # ⚠️不要删除这一行
   # 启用 home-manager 核心支持
   programs.home-manager.enable = true; # ⚠️不要删除这一行
