@@ -16,7 +16,8 @@ bash oh-my-nix.sh
 4. 让脚本和配置适应你的设备
 
 # 已实现的
-1. 在普通用户下，在nixos或linux下执行oh-my-nix.sh脚本，即可完成nix的安装和配置
+1. 以普通用户或sudo用户，在nixos下执行oh-my-nix.sh脚本，可完成nix的安装和配置
+2. 以普通用户或sudo用户或root，在linux下执行oh-my-nix.sh脚本，可完成nix的安装和配置
 
 # TODO
 1. 解决以root或sudo用户执行oh-my-nix.sh脚本的问题
