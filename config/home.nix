@@ -1,7 +1,7 @@
 { config, pkgs, lib, username, myNixosVersion, ... }:
 
 let
-  modulesPath = ./hm-modules;
+  modulesPath = ../hm-modules;
 in
 {
   imports =

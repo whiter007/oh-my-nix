@@ -1,6 +1,31 @@
 # 项目介绍
-项目包含一个仅适用于impure模式的oh-my-nix.sh脚本和flake配置
-通过执行oh-my-nix.sh脚本，即可完成nix的安装和配置，一键还原您的单机配置
+一键还原您的nix单机配置
+让脚本适应您的环境
+
+# 项目功能
+
+| 特性 | NixOS | Linux | MacOS |
+| --- | --- | --- | --- |
+| 分区 | ✅ | —— | —— |
+| 安装前置软件 | ✅ | ✅ | ❌ |
+| 单安装nix安装 | —— | ✅ | ❌ |
+| 多用户nix安装 | —— | ✅ | ❌ |
+| 配置nix | ✅ | ✅ | ❌ |
+| CPU检测 | ❌ | ❌ | ❌ |
+| GPU检测 | ❌ | ❌ | ❌ |
+| 虚拟化检测 | ❌ | ❌ | ❌ |
+| 生成硬件配置 | ❌ | ❌ | ❌ |
+| 应用flake配置 | ✅ | ✅ | ❌ |
+
+
+
+# 脚本执行方式
+| 脚本执行方式 | NixOS | NixOS live cd | Linux | MacOS |
+| --- | --- | --- | --- | --- |
+| 普通用户执行 | ✅ | —— | ✅ | ❌ |
+| sudo用户执行 | ✅ | —— | ✅ | ❌ |
+| root用户执行 | ✅ | ❌ | ✅ | ❌ |
+
 
 # 快速使用
 ```bash
@@ -8,16 +33,6 @@ git clone https://github.com/whiter007/oh-my-nix.git
 cd oh-my-nix/
 bash oh-my-nix.sh
 ```
-
-# 项目期望
-1. 能够以root、sudo用户和普通用户下执行
-2. 能够在不同系统下运行，包含nixos、linux等等
-3. 能够在nixos的live cd下运行
-4. 让脚本和配置适应你的设备
-
-# 已实现的
-1. 以普通用户或sudo用户，在nixos下执行oh-my-nix.sh脚本，可完成nix的安装和配置
-2. 以普通用户或sudo用户或root，在linux下执行oh-my-nix.sh脚本，可完成nix的安装和配置
 
 # TODO
 1. 解决以root或sudo用户执行oh-my-nix.sh脚本的问题

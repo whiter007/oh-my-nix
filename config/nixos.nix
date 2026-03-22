@@ -2,7 +2,7 @@
 { config, pkgs, lib, username, myNixosVersion, ... }:
 
 let
-  modulesPath = ./nixos-modules;
+  modulesPath = ../nixos-modules;
 in
 {
   imports =

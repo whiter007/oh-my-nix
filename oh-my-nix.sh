@@ -1,822 +1,729 @@
 #!/bin/bash
 set -eo pipefail
-# 初始化，脚本配置与环境信息获取
-function init(){
-    function script_setup(){
-        function use_sudo(){
-            if [ ! $EUID -eq 0 ]; then # 如果是普通用户执行脚本
-                sudo "$@"
-            else                         # 如果是sudo或者root用户执行脚本
-                "$@"
-            fi
-        }
-        # 提权，自动赋予此脚本执行权限
-        function elevate_privilege(){
-            if [ ! -x "$0" ]; then # 如果脚本没有执行权限
-                echo "===== 正在赋予脚本执行权限 ====="
-                use_sudo chmod +x "$0"
-            fi
-        }
-        # 降级，以sudo执行时重新以普通用户执行
-        function downgrade_privilege(){
-            if [ "$EUID" -eq 0 ] && [ -n "$SUDO_USER" ]; then
-                exec sudo -u "$SUDO_USER" \
-                    HOME="$(eval echo ~"$SUDO_USER")" \
-                    bash "$0" "$@"
-            fi
-        }
-        # 执行者检查
-        function user_detect(){
-            function check_first_username(){
-                # 优先取sudo执行的原始用户 → 再取当前登录用户 → 最后取第一个普通用户（uid≥1000）
-                echo "${SUDO_USER:-$(logname 2>/dev/null || awk -F: '$3>=1000 && $1!="nobody"{print $1;exit}' /etc/passwd)}"
-            }
-            IS_ROOT_USER=false # root用户执行
-            IS_SUDO_USER=false # sudo用户执行
-            USER_NAME=$(whoami)          # 普通用户和root的执行者名字
-            if [ "$EUID" -eq 0 ]; then       # 如果不是普通用户执行
-                if [ -n "$SUDO_USER" ]; then # 如果是sudo用户执行
-                    IS_SUDO_USER=true
-                    USER_NAME="$SUDO_USER"  # sudo用户的执行者名字
-                else                         # 如果是root用户执行
-                    IS_ROOT_USER=true
-                    USER_NAME=$(check_first_username)
-                fi
-            fi
+disko_file_path="./config/disk-config.nix"
 
-            echo "应用此配置的用户:$USER_NAME"
-            echo "IS_ROOT_USER:$IS_ROOT_USER"
-            echo "IS_SUDO_USER:$IS_SUDO_USER"
+export NIX_CONFIG="experimental-features = nix-command flakes
+substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
+
+USING_SUBSTITUTERS="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://mirror.sjtu.edu.cn/nix-channels/store https://mirrors.cqupt.edu.cn/nix-channels/store https://cache.nixos.org"
+
+BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz"
+
+function init(){
+    function prelude_func(){
+        get_current_exe() {
+            # Returns the executable used for system architecture detection
+            # This is only run on Linux
+            local _current_exe
+            if test -L /proc/self/exe ; then
+                _current_exe=/proc/self/exe
+            else
+                warn "Unable to find /proc/self/exe. System architecture detection might be inaccurate."
+                if test -n "$SHELL" ; then
+                    _current_exe=$SHELL
+                else
+                    need_cmd /bin/sh
+                    _current_exe=/bin/sh
+                fi
+                warn "Falling back to $_current_exe."
+            fi
+            echo "$_current_exe"
         }
-        elevate_privilege
-        downgrade_privilege
-        echo "===== 命令执行者检测 ====="
-        # 用户检测
-        user_detect
+        __print() {
+            if $_ansi_escapes_are_valid; then
+                printf '\33[1m%s:\33[0m %s\n' "$1" "$2" >&2
+            else
+                printf '%s: %s\n' "$1" "$2" >&2
+            fi
+        }
+        warn() {
+            __print 'warn' "$1" >&2
+        }
+        say() {
+            __print 'info' "$1" >&2
+        }
+        # NOTE: you are required to exit yourself
+        # we don't do it here because of multiline errors
+        err() {
+            __print 'error' "$1" >&2
+            exit 1
+        }
+        need_cmd() {
+            if ! check_cmd "$1"; then
+                err "need '$1' (command not found)"
+
+            fi
+        }
+        check_cmd() {
+            command -v "$1" > /dev/null 2>&1
+        }
     }
-    function os_detect(){
-        local _ostype _cputype _arch
+    function get_architecture() {
+        # local _ostype _cputype _arch
         _ostype="$(uname -s)"
         _cputype="$(uname -m)"
-        WHICH_DISTRO_ENV=""
-        function detect_which_distro_env(){
-            if [ "$(uname -s)" == "Darwin" ]; then
-                WHICH_DISTRO_ENV="macos"
-                return
+        if [ "$_ostype" = Linux ]; then
+            if [ "$(uname -o)" = Android ]; then
+                _ostype=Android
+            elif [ -f /etc/os-release ]; then
+                source /etc/os-release && [ "${ID:-}" = "nixos" ] && _ostype="NixOS"
             fi
-            if [ -f /etc/os-release ]; then
-                local id=""
-                source /etc/os-release
-                if [ -n "${ID:-}" ]; then
-                    WHICH_DISTRO_ENV="$ID"
-                    return
+        fi
+        if [ "$_ostype" = Darwin ]; then
+            # Darwin 系统下的 `uname -m` 命令可能因 Rosetta 兼容层的问题返回错误结果。
+            # 理论上，如果能确保调用原生的 Shell 二进制文件和原生的 uname 二进制文件，
+            # 可以获取真实的架构信息，但这一点很难保证。因此我们改用 `sysctl` 命令（该命令不会返回错误信息）
+            # 来检测真实的 CPU 架构。
+            if [ "$_cputype" = i386 ]; then
+                # 处理运行在基于 x86_64 架构的 Mac 上的旧版 macOS（版本 <10.15）中的 i386 兼容模式。
+                # 从 macOS 10.15 开始，苹果明确禁止所有 i386 架构的二进制文件运行。
+                # 参考文档：<https://support.apple.com/en-us/HT208436>
+
+                # 避免 `sysctl: unknown oid` 错误输出到标准错误流，同时避免非零退出码。
+                if (sysctl hw.optional.x86_64 2> /dev/null || true) | grep -q ': 1'; then
+                    _cputype=x86_64
+                fi
+            elif [ "$_cputype" = x86_64 ]; then
+                # 处理运行在基于 arm64 架构的 Mac 上的新版 macOS（版本 >=11）中的 x86-64 兼容模式（也称为 Rosetta 2）。
+                # Rosetta 2 仅为 x86-64 架构设计，无法运行 i386 架构的二进制文件。
+
+                # 避免 `sysctl: unknown oid` 错误输出到标准错误流，同时避免非零退出码。
+                if (sysctl hw.optional.arm64 2> /dev/null || true) | grep -q ': 1'; then
+                    _cputype=arm64
                 fi
             fi
-            if [ -f /etc/debian_version ]; then
-                WHICH_DISTRO_ENV="debian"
-                return
-            fi
-            if [ -f /etc/redhat-release ]; then
-                WHICH_DISTRO_ENV="rhel"
-                return
-            fi
-            if [ -f /etc/arch-release ]; then
-                WHICH_DISTRO_ENV="arch"
-                return
-            fi
-            if [ -f /etc/alpine-release ]; then
-                WHICH_DISTRO_ENV="alpine"
-                return
-            fi
-            if [ -f /etc/NIXOS ]; then
-                WHICH_DISTRO_ENV="nixos"
-                return
-            fi
-        }
-        detect_which_distro_env
-        echo "distro_env:$WHICH_DISTRO_ENV"
-    }
-    function live_cd_detect(){
-        IS_LIVE_CD_ENV=false
-        if [ -f /proc/mounts ] && grep -qE 'overlay|aufs' /proc/mounts 2>/dev/null && grep -qE 'iso9660|squashfs' /proc/mounts 2>/dev/null; then
-            IS_LIVE_CD_ENV=true
-            return
         fi
-        if [ -d /lib/live ]; then
-            IS_LIVE_CD_ENV=true
-            return
-        fi
-        if [ -d /rofs ]; then
-            IS_LIVE_CD_ENV=true
-            return
-        fi
-        if [ -d /cdrom ] && mountpoint -q /cdrom 2>/dev/null; then
-            IS_LIVE_CD_ENV=true
-            return
-        fi
-        if [ -f /proc/cmdline ] && grep -qE 'boot=live|liveimg|rd.live.image' /proc/cmdline 2>/dev/null; then
-            IS_LIVE_CD_ENV=true
-            return
-        fi
+        if [ "$_ostype" = SunOS ]; then
+            # 不支持
 
-        echo "live_cd_env:$IS_LIVE_CD_ENV"
-    }
-    function live_cd_install(){
-        function detect_mounted_partition() {
-            # 如果不是Live CD环境，直接返回
-            if [ "$IS_LIVE_CD_ENV" != "true" ]; then
-                echo "非Live CD环境，跳过挂载检测"
-                HAS_MOUNTED_PARTITION=false
-                return 1
+            # 目前 Solaris 和 illumos 系统在执行 `uname -s` 时都会返回 "SunOS"，
+            # 因此需要使用 `uname -o` 来区分二者。我们使用系统 uname 命令的完整路径，
+            # 以避免用户的 PATH 环境变量中优先存在 coreutils 版本的 uname（该版本历史上曾在此处返回错误值）。
+            if [ "$(/usr/bin/uname -o)" = illumos ]; then
+                _ostype=illumos
             fi
 
-            HAS_MOUNTED_PARTITION=false
-
-            # 检测是否有物理磁盘分区被挂载（排除loop等虚拟设备）
-            local mounts=$(grep -E '^/dev/(sd|nvme|vd|mmcblk|hd|xvd)' /proc/mounts | grep -v 'loop')
-
-            if [ -n "$mounts" ]; then
-                HAS_MOUNTED_PARTITION=true
-                echo "Live CD环境：已检测到挂载的物理磁盘"
-                echo "当前挂载情况："
-                echo "$mounts" | awk '{print "  " $1 " -> " $2 " (" $3 ")"}'
-                echo "即将开始安装系统"
-                return 0
-            else
-                HAS_MOUNTED_PARTITION=false
-                echo "Live CD环境：未检测到挂载的物理磁盘"
-                echo "请先挂载目标磁盘到 /mnt"
-                return 1
-            fi
-        }
-        function nixos_live_cd_install(){
-            if [ "$HAS_MOUNTED_PARTITION" = "true" ]; then
-                echo "正在安装系统..."
-            else
-                echo "跳过系统安装（未检测到挂载的磁盘）"
-            fi
-        }
-        detect_live_cd_env
-        if [ "$IS_LIVE_CD_ENV" = "true" ]; then
-            echo "当前环境为Live CD"
-        else
-            echo "当前环境不是Live CD"
-        fi
-        detect_mounted_partition
-        nixos_live_cd_install
-    }
-
-
-    # 脚本初始化
-    script_setup
-
-    echo "===== 系统环境检测 ====="
-    # 操作系统环境检测
-    os_detect
-
-    echo "===== Live CD检测 ====="
-    # Live CD环境检测
-    live_cd_detect
-    if [ "$IS_LIVE_CD_ENV" = "true" ]; then
-        live_cd_install
-    fi
-}
-function nix_install(){
-    if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
-        echo "当前为NixOS，跳过安装nix"
-        if command -v git >/dev/null 2>&1; then
-            echo "git 已安装，跳过安装"
-        else
-            echo "正在安装 git"
-            use_sudo nix --extra-experimental-features 'nix-command flakes' profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz git --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
-        fi
-
-        if command -v lspci >/dev/null 2>&1; then
-            echo "lspci 已安装，跳过安装"
-        else
-            echo "正在安装 lspci"
-            use_sudo nix --extra-experimental-features 'nix-command flakes' profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz pciutils --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
-        fi
-        echo 正在查看当前profile列表：
-        nix --extra-experimental-features 'nix-command flakes' profile list
-    elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
-        : # 无操作
-    else                                           # linux环境
-        # 检查并安装 curl、xz、git（网络请求和必要解压缩工具）。linux已稳定。TODO：增加darwin环境安装必要的工具的脚本
-        function install_utils(){
-            # 检查需要安装的包
-            local pkgs_to_install=""
-
-            if ! command -v curl >/dev/null 2>&1; then
-                pkgs_to_install="$pkgs_to_install curl"
-            fi
-
-            if ! command -v xz >/dev/null 2>&1; then
-                pkgs_to_install="$pkgs_to_install xz"
-            fi
-
-            if ! command -v git >/dev/null 2>&1; then
-                pkgs_to_install="$pkgs_to_install git"
-            fi
-
-            if ! command -v lspci >/dev/null 2>&1; then
-                pkgs_to_install="$pkgs_to_install pciutils"
-            fi
-
-            # 如果所有工具都已安装，则跳过
-            if [ -z "$pkgs_to_install" ]; then
-                echo "curl、xz、git、pciutils 均已安装"
-                return 0
-            fi
-
-            echo "需要安装的工具:$pkgs_to_install"
-
-            # 根据系统选择包管理器
-            if [ "$WHICH_DISTRO_ENV" == "macos" ]; then
-                if command -v brew >/dev/null 2>&1; then
-                    echo "macOS环境，使用Homebrew安装"
-                    brew install $pkgs_to_install
-                else
-                    echo "未检测到Homebrew，请先安装Homebrew：/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
-                    exit 1
-                fi
-            elif command -v oma >/dev/null 2>&1; then
-                echo "如果慢请先输入 oma mirror 命令以换源"
-                use_sudo oma install -y $pkgs_to_install # ASOC系统
-            elif command -v apt >/dev/null 2>&1; then
-                # apt 包名特殊处理：xz 对应 xz-utils
-                local apt_pkgs=""
-                for pkg in $pkgs_to_install; do
-                    if [ "$pkg" == "xz" ]; then
-                        apt_pkgs="$apt_pkgs xz-utils"
-                    else
-                        apt_pkgs="$apt_pkgs $pkg"
-                    fi
-                done
-                use_sudo apt install -y $apt_pkgs # Debian/Ubuntu系列
-            elif command -v yum >/dev/null 2>&1; then
-                use_sudo yum install -y $pkgs_to_install # Redhat/CentOS系列
-            elif command -v dnf >/dev/null 2>&1; then
-                use_sudo dnf install -y $pkgs_to_install # Fedora系列
-            elif command -v pacman >/dev/null 2>&1; then
-                use_sudo pacman -S --noconfirm $pkgs_to_install # Arch Linux系列
-            elif command -v zypper >/dev/null 2>&1; then
-                use_sudo zypper install -y $pkgs_to_install # openSUSE系列
-            else
-                echo "未检测到支持的包管理器，请手动安装:$pkgs_to_install"
-                return 1
-            fi
-        }
-        function uninstall_multi_user_nix(){
-            read -p "检测到nix已多用户安装，是否卸载？(Y/N，默认N): " -r
-            function backups_recover(){
-                if [ -f /etc/zshrc.backup-before-nix ]; then
-                    use_sudo mv /etc/zshrc.backup-before-nix /etc/zshrc
-                    source /etc/zshrc
-                fi
-                if [ -f /etc/bashrc.backup-before-nix ]; then
-                    use_sudo mv /etc/bashrc.backup-before-nix /etc/bashrc
-                    source /etc/bashrc
-                fi
-                if [ -f /etc/bash.bashrc.backup-before-nix ]; then
-                    use_sudo mv /etc/bash.bashrc.backup-before-nix /etc/bash.bashrc
-                    source /etc/bash.bashrc
-                fi
-            }
-            function daemon_stop_and_remove(){
-                if [ "$WHICH_DISTRO_ENV" == "macos" ]; then
-                    use_sudo launchctl unload /Library/LaunchDaemons/org.nixos.nix-daemon.plist
-                    use_sudo rm /Library/LaunchDaemons/org.nixos.nix-daemon.plist
-                    use_sudo launchctl unload /Library/LaunchDaemons/org.nixos.darwin-store.plist
-                    use_sudo rm /Library/LaunchDaemons/org.nixos.darwin-store.plist
-                else
-                    use_sudo systemctl stop nix-daemon.service
-                    use_sudo systemctl disable nix-daemon.socket nix-daemon.service
-                    use_sudo rm -f /etc/systemd/system/nix-daemon.service
-                    use_sudo rm -f /etc/systemd/system/nix-daemon.socket
-                    use_sudo systemctl daemon-reload
-                fi
-            }
-            function nixbld_group_and_users_remove(){
-                if [ "$WHICH_DISTRO_ENV" == "macos" ]; then
-                    use_sudo dscl . -delete /Groups/nixbld
-                    for u in $(use_sudo dscl . -list /Users | grep _nixbld); do use_sudo dscl . -delete /Users/$u; done
-                else
-                    for i in $(seq 1 32); do
-                        use_sudo userdel nixbld$i
-                    done
-                    use_sudo groupdel nixbld
-                fi
-            }
-            function multi_nix_file_remove(){
-                # 删除 Nix 主目录（核心存储）
-                use_sudo rm -rf /nix
-                # 删除 Nix 多用户安装的配置文件（可选，清理残留）
-                use_sudo rm -rf ~root/.nix-profile
-                use_sudo rm -rf ~root/.nix-channels
-                use_sudo rm -rf ~root/.nix-defexpr
-                use_sudo rm -rf /etc/nix
-                # 删除 Nix 多用户安装的配置文件
-                use_sudo rm -rf /etc/profile.d/nix.sh
-                use_sudo rm -rf /etc/tmpfiles.d/nix-daemon.conf
-                use_sudo rm -rf ~root/.local/state/nix
-                use_sudo rm -rf ~root/.cache/nix
-            }
-            function macos_additional_remove(){
-                :
-            }
-            # if [[ $REPLY =~ ^[Yy]$ ]] || [ -z $REPLY ]; then # (Y/N，默认Y)
-            if [[ $REPLY =~ ^[Yy]$ ]]; then #(Y/N，默认N)
-                echo "正在卸载nix多用户安装"
-                backups_recover
-                daemon_stop_and_remove
-                nixbld_group_and_users_remove
-                multi_nix_file_remove
-                echo "按任意键继续..."
-                read -r -n 1 -s  # -n 1 读取1个字符，-s 不回显输入
-                NEED_TO_INSTALL_NIX=true
-            else
-                echo "保留nix多用户安装"
-            fi
-        }
-        function uninstall_single_user_nix(){
-            read -p "检测到nix已单用户安装，是否卸载？(Y/N，默认N): " -r
-            function backups_recover(){
-                if [ -f $(eval echo ~"$USER_NAME")/.zshrc.backup ]; then
-                    use_sudo mv $(eval echo ~"$USER_NAME")/.zshrc.backup $(eval echo ~"$USER_NAME")/.zshrc
-                    source $(eval echo ~"$USER_NAME")/.zshrc
-                fi
-                if [ -f $(eval echo ~"$USER_NAME")/.bashrc.backup ]; then
-                    use_sudo mv $(eval echo ~"$USER_NAME")/.bashrc.backup $(eval echo ~"$USER_NAME")/.bashrc
-                    source $(eval echo ~"$USER_NAME")/.zshrc
-                fi
-                if [ -f $(eval echo ~"$USER_NAME")/.bash.bashrc.backup ]; then
-                    use_sudo mv $(eval echo ~"$USER_NAME")/.bash.bashrc.backup $(eval echo ~"$USER_NAME")/.bash.bashrc
-                    source $(eval echo ~"$USER_NAME")/.zshrc
-                fi
-            }
-            function single_nix_file_remove(){
-                # 删除 Nix 主目录（核心存储）
-                use_sudo rm -rf /nix
-                # 删除用户级 Nix 配置（可选，清理残留）
-                rm -rf $(eval echo ~"$USER_NAME")/.nix-profile
-                rm -rf $(eval echo ~"$USER_NAME")/.nix-defexpr
-                rm -rf $(eval echo ~"$USER_NAME")/.nix-channels
-                rm -rf $(eval echo ~"$USER_NAME")/.config/nix
-            }
-            # if [[ $REPLY =~ ^[Yy]$ ]] || [ -z $REPLY ]; then # (Y/N，默认Y)
-            if [[ $REPLY =~ ^[Yy]$ ]]; then #(Y/N，默认N)
-                backups_recover
-                single_nix_file_remove
-                echo "按任意键继续..."
-                read -r -n 1 -s  # -n 1 读取1个字符，-s 不回显输入
-                NEED_TO_INSTALL_NIX=true
-            else
-                echo "保留nix单用户安装"
-            fi
-        }
-        function check_conflict_nix(){
-            local _is_multi_user_installed=false
-            local _is_single_user_installed=false
-            NEED_TO_INSTALL_NIX=false
-
-            if [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then # 多用户安装
-                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-                _is_multi_user_installed=true
-            elif [ -f $(eval echo ~"$USER_NAME")/.nix-profile/etc/profile.d/nix.sh ]; then # 单用户安装
-                source $(eval echo ~"$USER_NAME")/.nix-profile/etc/profile.d/nix.sh
-                _is_single_user_installed=true
-            fi
-
-            if [ "$IS_ROOT_USER" == "false" ] && [ "$IS_SUDO_USER" == "false" ]; then # 普通用户执行脚本
-                if [ "$_is_multi_user_installed" == "true" ]; then
-                    echo "nix已多用户安装，检测到/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
-                    uninstall_multi_user_nix
-                elif [ "$_is_single_user_installed" == "true" ]; then
-                    echo "nix已单用户安装，检测到$(eval echo ~"$USER_NAME")/.nix-profile/etc/profile.d/nix.sh"
-                else
-                    echo "nix未安装"
-                    NEED_TO_INSTALL_NIX=true
-                fi
-            else                                                                      # root或者sudo用户执行脚本
-                if [ "$_is_single_user_installed" == "true" ]; then
-                    echo "nix已单用户安装，检测到$(eval echo ~"$USER_NAME")/.nix-profile/etc/profile.d/nix.sh"
-                    uninstall_single_user_nix
-                elif [ "$_is_multi_user_installed" == "true" ]; then
-                    echo "nix已多用户安装，检测到/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh"
-                else
-                    echo "nix未安装"
-                    NEED_TO_INSTALL_NIX=true
-                fi
-            fi
-        }
-        # linux环境安装nix已稳定。
-        function install_nix(){
-            # 如果是普通用户执行，执行单用户安装
-            # 如果是root或者sudo用户执行，执行守护进程安装
-            if [ "$IS_ROOT_USER" == "false" ] && [ "$IS_SUDO_USER" == "false" ]; then
-                bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add
-            else
-                rm -rf /etc/zshrc.backup-before-nix
-                rm -rf /etc/bashrc.backup-before-nix
-                rm -rf /etc/bash.bashrc.backup-before-nix
-                NIX_INSTALLER_YES=1 bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add --daemon
-                usermod -aG nix-users "$USER_NAME"
-            fi
-            # 尝试加载nix环境
-            if [ -f $(eval echo ~"$USER_NAME")/.nix-profile/etc/profile.d/nix.sh ]; then
-                source $(eval echo ~"$USER_NAME")/.nix-profile/etc/profile.d/nix.sh
-            elif [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then
-                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-            fi
-        }
-        install_utils
-        check_conflict_nix
-        if [ "$NEED_TO_INSTALL_NIX" == "true" ]; then
-            install_nix
-        fi
-    fi
-}
-function hardware_detect(){
-    # AI写的
-    function os_in_container_detect(){
-        IS_CONTAINER_ENV=false
-        if [ -f /run/.containerenv ]; then
-            echo "当前环境为容器"
-            return 0
-        fi
-        if [ -f /.dockerenv ]; then
-            IS_CONTAINER_ENV=true
-            return
-        fi
-        if [ -f /proc/1/cgroup ] && grep -qE 'docker|containerd|kubepods|lxc' /proc/1/cgroup 2>/dev/null; then
-            IS_CONTAINER_ENV=true
-            return
-        fi
-        if [ -n "${container:-}" ]; then
-            IS_CONTAINER_ENV=true
-            return
-        fi
-        if grep -q 'container=' /proc/1/environ 2>/dev/null; then
-            IS_CONTAINER_ENV=true
-            return
-        fi
-        echo "container_env:$IS_CONTAINER_ENV"
-    }
-    # 需要检测CPU厂商，因为不同厂商的CPU虚拟化支持不同
-    function cpu_detect(){
-        local cpu_model=$(lscpu | grep "Model name" | awk -F: '{print $2}' | xargs)
-        echo "CPU型号: $cpu_model"
-    }
-    # AI写的
-    function virtualization_support_detect() {
-        VIRTUALIZATION_SUPPORT=false
-        NESTED_VIRT_ENABLED=false
-        HYPERVISOR_TYPE="none"
-        CPU_MODEL=""
-        VIRT_TYPE=""
-
-        # 获取CPU型号
-        CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d':' -f2 | xargs)
-
-        # 检测虚拟化标志
-        local virt_flags=$(grep -oE 'vmx|svm' /proc/cpuinfo 2>/dev/null)
-        local virt_count=$(echo "$virt_flags" | grep -c .)
-
-        # 确定虚拟化类型
-        if echo "$virt_flags" | grep -q 'vmx'; then
-            VIRT_TYPE="Intel VT-x"
-        elif echo "$virt_flags" | grep -q 'svm'; then
-            VIRT_TYPE="AMD-V"
-        fi
-
-        # 检测运行环境（虚拟机/物理机）
-        local hypervisor=""
-
-        # 方法1: systemd-detect-virt
-        if command -v systemd-detect-virt &>/dev/null; then
-            hypervisor=$(systemd-detect-virt 2>/dev/null)
-            [ "$hypervisor" = "none" ] && hypervisor=""
-        fi
-
-        # 方法2: /sys/hypervisor/type (Xen)
-        if [ -z "$hypervisor" ] && [ -f /sys/hypervisor/type ]; then
-            hypervisor=$(cat /sys/hypervisor/type 2>/dev/null)
-        fi
-
-        # 方法3: CPU hypervisor标志
-        if [ -z "$hypervisor" ] && grep -q "hypervisor" /proc/cpuinfo 2>/dev/null; then
-            hypervisor="unknown"
-        fi
-
-        # 方法4: DMI信息检测具体虚拟化平台
-        if [ -f /sys/class/dmi/id/product_name ]; then
-            local dmi_product=$(cat /sys/class/dmi/id/product_name 2>/dev/null)
-            local dmi_vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)
-
-            case "$dmi_product$dmi_vendor" in
-                *[Vv][Mm][Ww][Aa][Rr][Ee]*|*VMware*)
-                    hypervisor="vmware"
-                    ;;
-                *[Vv][Ii][Rr][Tt][Uu][Aa][Ll][Bb][Oo][Xx]*|*VirtualBox*)
-                    hypervisor="oracle"
-                    ;;
-                *[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]*[Cc][Oo][Rr][Pp]*|*Hyper-V*)
-                    hypervisor="microsoft"
-                    ;;
-                *[Kk][Vv][Mm]*|*[Qq][Ee][Mm][Uu]*)
-                    hypervisor="kvm"
-                    ;;
-                *[Xx][Ee][Nn]*)
-                    hypervisor="xen"
-                    ;;
-                *[Pp][Aa][Rr][Aa][Ll][Ll][Ee][Ll][Ss]*)
-                    hypervisor="parallels"
-                    ;;
-            esac
-        fi
-
-        # 方法5: 检查特定文件
-        if [ -z "$hypervisor" ]; then
-            if [ -d /proc/xen ]; then
-                hypervisor="xen"
-            elif [ -f /proc/vmware/version ]; then
-                hypervisor="vmware"
-            elif [ -f /proc/vz/veinfo ]; then
-                hypervisor="openvz"
+            # illumos 系统支持多架构用户空间，`uname -m` 命令返回的是机器硬件名称；
+            # 例如，在 32 位和 64 位 x86 系统上均返回 "i86pc"。
+            # 此处检测运行中的内核所支持的原生（最宽）指令集：
+            if [ "$_cputype" = i86pc ]; then
+                _cputype="$(isainfo -n)"
             fi
         fi
+        local _current_exe
+        case "$_ostype" in
+            Linux)
+                _current_exe=$(get_current_exe)
+                _ostype=linux
+                ;;
 
-        # 标准化hypervisor名称
-        case "$hypervisor" in
-            vmware|VMware) HYPERVISOR_TYPE="VMware" ;;
-            kvm|KVM) HYPERVISOR_TYPE="KVM/QEMU" ;;
-            xen|Xen|xen-domU|xen-dom0) HYPERVISOR_TYPE="Xen" ;;
-            oracle|virtualbox|VirtualBox) HYPERVISOR_TYPE="VirtualBox" ;;
-            microsoft|hyperv|Hyper-V|hyper-v) HYPERVISOR_TYPE="Hyper-V" ;;
-            parallels|Parallels) HYPERVISOR_TYPE="Parallels" ;;
-            openvz|OpenVZ) HYPERVISOR_TYPE="OpenVZ" ;;
-            docker|Docker) HYPERVISOR_TYPE="Docker" ;;
-            wsl|WSL) HYPERVISOR_TYPE="WSL" ;;
-            unknown) HYPERVISOR_TYPE="Unknown VM" ;;
-            *) HYPERVISOR_TYPE="none" ;;
+            Darwin)
+                _ostype=darwin
+                ;;
+
+            NixOS)
+                _ostype=nixos
+                ;;
+
+            *)
+                err "unrecognized OS type: $_ostype"
+
+                ;;
+
         esac
 
-        # 判断逻辑
-        if [ "$HYPERVISOR_TYPE" = "none" ]; then
-            # 物理机环境
-            if [ "$virt_count" -gt 0 ]; then
-                VIRTUALIZATION_SUPPORT=true
-                echo "当前环境为物理机，CPU支持硬件虚拟化 ($VIRT_TYPE)"
-                echo "虚拟化核心数: $virt_count"
-            else
-                echo "当前环境为物理机，但CPU不支持硬件虚拟化或已在BIOS中禁用"
-            fi
-        else
-            # 虚拟机环境
-            if [ "$virt_count" -gt 0 ]; then
-                NESTED_VIRT_ENABLED=true
-                VIRTUALIZATION_SUPPORT=true
-                echo "当前环境为$HYPERVISOR_TYPE虚拟机，且嵌套虚拟化已开启"
-                echo "CPU型号: $CPU_MODEL"
-                echo "虚拟化类型: $VIRT_TYPE"
-            else
-                echo "当前环境为$HYPERVISOR_TYPE虚拟机，且嵌套虚拟化未开启"
-                echo "CPU型号: $CPU_MODEL"
-                echo "提示: 请在虚拟机设置中启用'嵌套虚拟化'或'Expose hardware-assisted CPU virtualization to guest OS'"
-            fi
-        fi
+        case "$_cputype" in
+            aarch64 | arm64)
+                _cputype=aarch64
+                ;;
 
-        # 额外检查KVM可用性
-        if [ "$VIRTUALIZATION_SUPPORT" = true ]; then
-            if [ -e /dev/kvm ]; then
-                if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-                    echo "KVM加速可用 (/dev/kvm)"
-                else
-                    echo "KVM设备存在但当前用户无权限，尝试: sudo chmod 666 /dev/kvm"
-                fi
-            else
-                echo "KVM模块未加载，尝试: sudo modprobe kvm_intel 或 sudo modprobe kvm_amd"
-            fi
-        fi
+            x86_64 | x86-64 | x64 | amd64)
+                _cputype=x86_64
+                ;;
 
-        echo "VIRTUALIZATION_SUPPORT=$VIRTUALIZATION_SUPPORT"
+            *)
+                err "unknown CPU type: $_cputype"
+                ;;
+
+        esac
+
+        OS_TYPE="${_ostype}"
     }
-    # 这段是 https://gitlab.com/Zaney/zaneyos 中 install-zaneyos.sh 的132-198行直接扒下来的
-    function gpu_detect(){
-        echo "GPU Profile Detection"
-
-        # Attempt automatic detection
-        DETECTED_PROFILE=""
-
-        has_nvidia=false
-        has_intel=false
-        has_amd=false
-        has_vm=false
-
-        if lspci | grep -qi 'vga\|3d\|display'; then
-        while read -r line; do
-            if echo "$line" | grep -qi 'nvidia'; then
-            has_nvidia=true
-            elif echo "$line" | grep -qi 'amd\|ati\|advanced micro devices'; then
-            has_amd=true
-            elif echo "$line" | grep -qi 'intel'; then
-            has_intel=true
-            elif echo "$line" | grep -qi 'virtio\|vmware'; then
-            has_vm=true
-            fi
-        done < <(lspci | grep -i 'vga\|3d\|display')
-
-        if $has_vm; then
-            DETECTED_PROFILE="vm"
-        elif $has_nvidia && $has_amd; then
-            DETECTED_PROFILE="amd-nvidia-hybrid"
-        elif $has_nvidia && $has_intel; then
-            DETECTED_PROFILE="nvidia-laptop"
-        elif $has_nvidia; then
-            DETECTED_PROFILE="nvidia"
-        elif $has_amd; then
-            DETECTED_PROFILE="amd"
-        elif $has_intel; then
-            DETECTED_PROFILE="intel"
-        fi
-        fi
-
-        # Handle detected profile or fall back to manual input
-        if [ -n "$DETECTED_PROFILE" ]; then
-            profile="$DETECTED_PROFILE"
-            echo -e "${GREEN}Detected GPU profile: $profile${NC}"
-            read -p "Correct? (Y/N): " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then #(Y/N，默认N)
-                echo -e "${RED}GPU profile not confirmed. Falling back to manual selection.${NC}"
-                profile="" # Clear profile to force manual input
-            fi
-        fi
-
-        # If profile is still empty (either not detected or not confirmed), prompt manually
-        if [ -z "$profile" ]; then
-        echo -e "${RED}Automatic GPU detection failed or no specific profile found.${NC}"
-        read -rp "Enter Your Hardware Profile (GPU)
-        Options:
-        [ amd ]
-        amd-nvidia-hybrid
-        intel
-        nvidia
-        nvidia-laptop
-        vm
-        Please type out your choice: " profile
-        if [ -z "$profile" ]; then
-            profile="amd"
-        fi
-        echo -e "${GREEN}Selected GPU profile: $profile${NC}"
-        fi
+    function live_cd_detect(){
+        IS_LIVE_CD=$([ -f /proc/cmdline ] && grep -qE 'boot=live|live\.iso|nixos-live' /proc/cmdline 2>/dev/null && echo true || { mount | grep -qE ' / .*ro,' 2>/dev/null && [ -f /proc/mounts ] && grep -qE 'iso9660|squashfs' /proc/mounts 2>/dev/null && echo true || { [ -f /proc/mounts ] && grep -qE '/nix/store.*tmpfs|/nix/store.*overlay' /proc/mounts 2>/dev/null && echo true || echo false; }; })
+        # IS_LIVE_CD=$([ $IS_LIVE_CD -eq 0 ] && echo true || echo false)
     }
-    echo "1. 容器检查"
-    # 是否在容器中运行检查
-    os_in_container_detect
-
-    echo "2. CPU检测"
-    # 检查CPU
-    cpu_detect
-
-    echo "3. 虚拟化支持检测"
-    # 检测CPU虚拟化支持
-    virtualization_support_detect
-
-    echo "4. GPU检测"
-    # 检查GPU
-    gpu_detect
-
-}
-# 安装，根据环境类型执行不同的安装脚本
-function install(){
-    # 配置nix源。单用户或nix已稳定。TODO：待确认多用户安装和darwin环境。
-    function nix_config(){
-        # 配置系统nix源
-        echo 正在配置flake的nixpkgs仓库...
-        nix --extra-experimental-features 'nix-command flakes' registry add nixpkgs https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz
-        echo 正在配置nix-系列命令的nixpkgs仓库...
-        nix-channel --add https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz nixpkgs
-        nix-channel --update
-
-        # 脚本nix命令配置
-        export NIX_CONFIG="experimental-features = nix-command flakes
-substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
-    }
-    function nix_setting(){
-        if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
-            : # 无操作
-        elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
-            : # 无操作
-        else                                           # linux环境
-            # 配置nix
-            echo "正在创建nix配置..."
-            if [ "$IS_ROOT_USER" == "true" ]; then
-                # 创建nix配置目录
-                mkdir -p /etc/nix
-                tee /etc/nix/nix.conf << EOF
-experimental-features = nix-command flakes # ✅ 启用flakes特性
-trusted-users = root $USER_NAME # ✅ 信任所有nix用户
-substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://cache.nixos.org # ✅ 使用清华镜像作为二进制缓存源
-trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= # ✅ 可信任的公钥，用于验证下载的包
-builders-use-substitutes = true # ✅ 优先使用远程主机的构建，大幅缩短构建时间
-auto-optimise-store = true # ✅ 相同内容链接同一文件，减少重复存储
-sandbox-fallback = false # ✅ 始终使用沙盒，失败不重复
-EOF
-            else
-                # 创建nix配置目录
-                mkdir -p $(eval echo ~"$USER_NAME")/.config/nix
-                tee $(eval echo ~"$USER_NAME")/.config/nix/nix.conf << EOF
-experimental-features = nix-command flakes # ✅ 启用flakes特性
-trusted-users = root $USER_NAME # ✅ 信任所有nix用户
-substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://cache.nixos.org # ✅ 使用清华镜像作为二进制缓存源
-trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= # ✅ 可信任的公钥，用于验证下载的包
-builders-use-substitutes = true # ✅ 优先使用远程主机的构建，大幅缩短构建时间
-auto-optimise-store = true # ✅ 相同内容链接同一文件，减少重复存储
-sandbox-fallback = false # ✅ 始终使用沙盒，失败不重复
-EOF
-            fi
-        fi
-    }
-    function flake_load(){
-        function check_flake(){
-            if [ ! -f flake.nix ]; then
-                echo "flake.nix 不存在，无法复制"
-                return 1
-            fi
+    function executer_detect(){
+        function check_first_username(){
+            # 优先取sudo执行的原始用户 → 再取当前登录用户 → 最后取第一个普通用户（uid≥1000）
+            echo "${SUDO_USER:-$(logname 2>/dev/null || awk -F: '$3>=1000 && $1!="nobody"{print $1;exit}' /etc/passwd)}"
         }
-        if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
-            if [ "$IS_LIVE_CD_ENV" == "true" ]; then
-                check_flake
-                echo "已复制/run/media/nixos/Ventoy/nix目录下的flake配置到/etc/nixos/"
-                use_sudo cp -r ./* /etc/nixos/
-            else
-                check_flake
-                echo "已复制当前目录下的flake配置到/etc/nixos/"
-                use_sudo cp -r ./* /etc/nixos/
-            fi
-        elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
-            : # 无操作
-        else                                           # linux环境
-            check_flake
-            TARGET_DIR=$(eval echo ~"$USER_NAME")/.config/home-manager
-            mkdir -p "$TARGET_DIR"
-            echo "已复制当前目录下的flake配置到 $TARGET_DIR"
-            cp -r ./* "$TARGET_DIR"
-        fi
-    }
-    function flake_apply(){
-        if [ "$WHICH_DISTRO_ENV" == "nixos" ]; then    # NixOS环境
-            if [ "$IS_LIVE_CD_ENV" == "true" ]; then
-                echo "NixOS Live CD环境，正在应用flake配置"
-                use_sudo nixos-rebuild switch --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store" --flake /etc/nixos/ --impure
-            else
-                echo "NixOS环境，正在应用flake配置"
-                USER=$USER_NAME use_sudo nixos-rebuild switch --option substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store" --flake /etc/nixos/ --impure
-            fi
-        elif [ "$WHICH_DISTRO_ENV" == "macos" ]; then  # macOS环境
-            : # 无操作
-        else                                           # linux环境
-            echo "非NixOS环境，正在应用home-manager配置"
-            if [ "$IS_ROOT_USER" == "true" ]; then
-                echo "root用户执行，切换到普通用户 $USER_NAME 应用配置"
-                su - "$USER_NAME" -c "
-                    export HOME=/home/$USER_NAME;
-                    nix run nixpkgs#home-manager -- switch --flake $(eval echo ~"$USER_NAME")/.config/home-manager --impure -b backup
-                "
-                # su - "$USER_NAME" -c "nix run nixpkgs#home-manager -- switch --flake ~/.config/home-manager/.#$USER_NAME --impure -b backup"
-            else
-                USER=$USER_NAME nix run nixpkgs#home-manager -- switch --flake $(eval echo ~"$USER_NAME")/.config/home-manager --impure -b backup
+        IS_ROOT_USER=false # root用户执行
+        IS_SUDO_USER=false # sudo用户执行
+        USER_NAME=$(whoami)          # 普通用户和root的执行者名字
+        if [ "$EUID" -eq 0 ]; then       # 如果不是普通用户执行
+            if [ -n "$SUDO_USER" ]; then # 如果是sudo用户执行
+                IS_SUDO_USER=true
+                USER_NAME="$SUDO_USER"  # sudo用户的执行者名字
+            else                         # 如果是root用户执行
+                IS_ROOT_USER=true
+                USER_NAME=$(check_first_username)
             fi
         fi
+        USER_HOME=$(eval echo ~"$USER_NAME")
     }
-    echo "1. 配置nix源"
-    nix_config # 配置nix源和脚本变量
-    nix_setting # 配置nix脚本安装后的nix
-    echo "2. 复制flake配置"
-    flake_load
-    echo "3. 应用flake配置"
-    flake_apply
+    # 让普通用户以sudo权限执行
+    function use_sudo(){
+        if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
+            sudo -E "$@"  # 加引号，保留参数完整性, -E 保留环境变量
+        else
+            "$@"          # 加引号，保留参数完整性
+        fi
+    }
+    function use_normal(){
+        # 1. 先验证普通用户是否存在（安全校验）
+        if ! id -u "$USER_NAME" >/dev/null 2>&1; then
+            echo "错误：普通用户 $USER_NAME 不存在！" >&2
+            return 1
+        fi
+
+        # 2. root/sudo用户切换到普通用户执行，否则直接执行
+        if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
+            # 使用 sudo -E 保留环境变量，同时设置 HOME
+            # 注意：-E 需要 sudoers 配置，但通常对 root 有效
+            # 使用 env 命令显式传递关键变量
+            sudo -u "$USER_NAME" -E \
+                HOME="$USER_HOME" \
+                PATH="$PATH" \
+                NIX_CONFIG="${NIX_CONFIG:-}" \
+                "$@"
+        else
+            "$@"
+        fi
+    }
+    # 提权，自动赋予此脚本执行权限
+    function elevate_privilege(){
+        if [ ! -x "$0" ]; then # 如果脚本没有执行权限
+            echo "===== 正在赋予脚本执行权限 ====="
+            use_sudo chmod +x "$0"
+        fi
+    }
+    # 降级：root/sudo执行时以普通用户重新执行。 -E 保持环境变量不变
+    function downgrade_privilege(){
+        if [ "$EUID" -eq 0 ]; then
+            exec sudo -u "$USER_NAME" -E HOME="$USER_HOME" bash "$0" "$@"
+        fi
+    }
+    prelude_func
+    executer_detect
+    elevate_privilege
+    # downgrade_privilege
+
+    get_architecture
+    say "Architecture: $_cputype"
+    say "Operating System: $OS_TYPE"
+    live_cd_detect
+    say "Is Live CD: $IS_LIVE_CD"
+    say "应用此配置的用户:$USER_NAME"
+    say "IS_ROOT_USER:$IS_ROOT_USER"
+    say "IS_SUDO_USER:$IS_SUDO_USER"
 }
-function done(){
-    echo "完成安装"
-    if [ "$IS_ROOT_USER" == "true" ]; then
-        su - "$USER_NAME" -c "nix run nixpkgs#fastfetch"
-    else
-        nix run nixpkgs#fastfetch
+function nix_channel(){
+    case "$OS_TYPE" in
+        nixos)
+            # say "正在添加 NixOS 仓库..."
+            # if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
+            #     sudo -E nix registry add nixpkgs $BINARY_URL
+            #     nix registry add nixpkgs $BINARY_URL
+            # else
+            #     nix registry add nixpkgs $BINARY_URL
+            # fi
+            use_sudo nix registry add nixpkgs $BINARY_URL
+            # nix registry add nixpkgs $BINARY_URL
+            ;;
+        linux)
+            if [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then # 多用户安装
+                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                say "正在添加 Nix 仓库..."
+                if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
+                    nix registry add nixpkgs $BINARY_URL
+                    su - "$USER_NAME" -c "USER=$USER_NAME HOME=$USER_HOME nix registry add nixpkgs $BINARY_URL"
+                else
+                    nix registry add nixpkgs $BINARY_URL
+                fi
+            elif [ -f $USER_HOME/.nix-profile/etc/profile.d/nix.sh ]; then # 单用户安装
+                source $USER_HOME/.nix-profile/etc/profile.d/nix.sh
+                say "正在添加 Nix 仓库..."
+                nix registry add nixpkgs $BINARY_URL
+            fi
+            # if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
+            #     say "添加 NixOS 仓库..."
+            #     use_sudo nix registry add nixpkgs $BINARY_URL
+            # elif [ "$IS_SINGLE_USER_INSTALLED" = true ]; then
+            #     say "添加 NixOS 仓库..."
+            #     use_normal nix registry add nixpkgs $BINARY_URL
+            # fi
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function partition_disk(){
+    if [ "$OS_TYPE" = nixos ] && [ "$IS_LIVE_CD" = true ]; then
+        say "当前是 NixOS Live CD"
+        local mounts=$(grep -E '^/dev/(sd|nvme|vd|mmcblk|hd|xvd)' /proc/mounts | grep -v 'loop')
+        if [ -n "$mounts" ]; then
+            say "已挂载分区"
+        else
+            say "未挂载任何设备，正在分区..."
+            if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
+                sudo -E nix run nixpkgs#disko -- --mode disko $disko_file_path
+            else
+                nix run nixpkgs#disko -- --mode disko $disko_file_path
+            fi
+        fi
     fi
 }
+function pre_program_install(){
+    case "$OS_TYPE" in
+        nixos)
+            if !(check_cmd git); then
+                warn "git command not found"
+                use_sudo nix --option extra-substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz git
+            else
+                say "git command found"
+            fi
+            if !(check_cmd lspci); then
+                warn "lspci command not found"
+                # if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
+                #     sudo -E nix profile add nixpkgs#pciutils
+                # else
+                #     nix profile add nixpkgs#pciutils
+                # fi
+                use_sudo nix --option extra-substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz pciutils
+            else
+                say "lspci command found"
+            fi
+            ;;
+        linux)
+            # 1. 定义：命令名 → 包名（apt特殊包名用|分隔）
+            local tools="curl:curl xz:xz|xz-utils git:git lspci:pciutils"
+            local pkgs=() pm="" install_cmd=""
 
-function main(){
+            # 2. 快速检查并收集缺失包
+            for item in $tools; do
+                cmd=${item%%:*} pkg=${item#*:}
+                if ! check_cmd "$cmd"; then
+                    pkgs+=(${pkg%|*})  # 取通用包名（|前的部分）
+                fi
+            done
+
+            # 3. 无缺失直接返回
+            [ ${#pkgs[@]} -eq 0 ] && { echo "所有工具均已安装"; return 0; }
+            warn "需要安装: ${pkgs[*]}"
+
+            # 4. 快速匹配包管理器（一行完成）
+            check_cmd oma && pm="oma" && install_cmd="oma install -y"
+            check_cmd apt && pm="apt" && install_cmd="apt install -y"
+            check_cmd yum && pm="yum" && install_cmd="yum install -y"
+            check_cmd dnf && pm="dnf" && install_cmd="dnf install -y"
+            check_cmd apk && pm="apk" && install_cmd="apk install -y"
+            check_cmd pacman && pm="pacman" && install_cmd="pacman -S --noconfirm"
+            check_cmd zypper && pm="zypper" && install_cmd="zypper install -y"
+
+            # 5. 处理apt特殊包名 + 执行安装
+            [ "$pm" = "apt" ] && pkgs=(${pkgs[@]/xz/xz-utils})  # 替换xz为xz-utils
+            [ "$pm" = "oma" ] && echo "安装慢可先执行: oma mirror"  # oma特殊提示
+            if [ -n "$install_cmd" ]; then
+                use_sudo $install_cmd ${pkgs[*]}
+            else
+                echo "无支持的包管理器，请手动安装: ${pkgs[*]}" && return 1
+            fi
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function single_nix_install(){
+    case "$OS_TYPE" in
+        nixos)
+            ;; # NixOS 不需要安装 Nix
+        linux)
+            bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add
+            IS_SINGLE_USER_INSTALLED=true
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function multi_nix_install(){
+    case "$OS_TYPE" in
+        nixos)
+            ;; # NixOS 不需要安装 Nix
+        linux)
+            NIX_INSTALLER_YES=1 bash <(curl --proto '=https' --tlsv1.2 -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-channel-add --daemon
+            IS_MULTI_USER_INSTALLED=true
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function choose_install_nix_type(){
+    case "$OS_TYPE" in
+        nixos)
+            ;; # NixOS 不需要安装 Nix
+        linux)
+            read -p "请选择安装类型：(1. 单用户安装 2. 多用户安装) " -r
+            if [ "$REPLY" = "1" ]; then
+                if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
+                    warn "正在以普通用户重新执行脚本，单用户需要以普通用户执行"
+                    downgrade_privilege
+                fi
+                single_nix_install
+            elif [ "$REPLY" = "2" ]; then
+                multi_nix_install
+            else
+                err "无效选择"
+            fi
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function check_nix_install(){
+    case "$OS_TYPE" in
+        nixos)
+            ;; # NixOS 不需要安装 Nix
+        linux)
+            IS_MULTI_USER_INSTALLED=false
+            IS_SINGLE_USER_INSTALLED=false
+
+            if [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then # 多用户安装
+                say "nix command found (多用户安装)"
+                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                IS_MULTI_USER_INSTALLED=true
+            elif [ -f $USER_HOME/.nix-profile/etc/profile.d/nix.sh ]; then # 单用户安装
+                if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
+                    warn "正在以普通用户重新执行脚本，单用户需要以普通用户执行"
+                    downgrade_privilege
+                fi
+                say "nix command found (单用户安装)"
+                source $USER_HOME/.nix-profile/etc/profile.d/nix.sh
+                IS_SINGLE_USER_INSTALLED=true
+            else
+                warn "nix command not found"
+                choose_install_nix_type
+            fi
+
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function nix_config(){
+    case "$OS_TYPE" in
+        nixos)
+            ;;
+        linux)
+            function edit_nix_config(){
+                if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
+                    local _nix_config_dir="/etc/nix"
+                    echo "正在 $_nix_config_dir/nix.conf 创建nix配置..."
+                    use_sudo mkdir -p $_nix_config_dir
+                    use_sudo chmod 755 $_nix_config_dir  # 显式设置权限
+                    use_sudo tee $_nix_config_dir/nix.conf << EOF
+experimental-features = nix-command flakes # ✅ 启用flakes特性
+trusted-users = root $USER_NAME # ✅ 多用户安装时，信任所有nix用户
+substituters = $USING_SUBSTITUTERS # ✅ 使用清华和中科大镜像作为二进制缓存源
+trusted-substituters = $USING_SUBSTITUTERS # ✅ 多用户安装时，信任所有二进制源
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= mirrors.tuna.tsinghua.edu.cn/nix-channels/store:rSzv032o86Rxxhl6/7aYRl0v56Kza+4+4G8q0aT+28A= mirrors.ustc.edu.cn/nix-channels/store:o9ien6A6Y75/32Jdl3lZF52E6hDUmD+86L948YH9QyU= # ✅ 可信任的公钥，用于验证下载的包
+builders-use-substitutes = true # ✅ 优先使用远程主机的构建，大幅缩短构建时间
+auto-optimise-store = true # ✅ 相同内容链接同一文件，减少重复存储
+sandbox-fallback = false # ✅ 始终使用沙盒，失败不重复
+EOF
+                    # 清理 root 用户的配置（防止冲突）
+                    if [ -f /root/.config/nix/nix.conf ]; then
+                        warn "删除 root 用户配置文件 /root/.config/nix/nix.conf 以避免配置冲突"
+                        use_sudo rm -rf /root/.config/nix/nix.conf
+                    fi
+                    # 清理普通用户的配置（防止冲突）
+                    if [ -f $USER_HOME/.config/nix/nix.conf ]; then
+                        warn "删除用户配置文件 $USER_HOME/.config/nix/nix.conf 以避免配置冲突"
+                        use_sudo rm -rf $USER_HOME/.config/nix/nix.conf
+                    fi
+
+                elif [ "$IS_SINGLE_USER_INSTALLED" = true ]; then
+                    local _nix_config_dir="$USER_HOME/.config/nix"
+                    echo "正在 $_nix_config_dir/nix.conf 创建nix配置..."
+                    use_normal mkdir -p $_nix_config_dir
+                    use_normal chmod 755 $_nix_config_dir  # 显式设置权限
+                    use_normal tee $_nix_config_dir/nix.conf << EOF
+experimental-features = nix-command flakes # ✅ 启用flakes特性
+substituters = $USING_SUBSTITUTERS # ✅ 使用清华和中科大镜像作为二进制缓存源
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= mirrors.tuna.tsinghua.edu.cn/nix-channels/store:rSzv032o86Rxxhl6/7aYRl0v56Kza+4+4G8q0aT+28A= mirrors.ustc.edu.cn/nix-channels/store:o9ien6A6Y75/32Jdl3lZF52E6hDUmD+86L948YH9QyU= # ✅ 可信任的公钥，用于验证下载的包
+builders-use-substitutes = true # ✅ 优先使用远程主机的构建，大幅缩短构建时间
+auto-optimise-store = true # ✅ 相同内容链接同一文件，减少重复存储
+sandbox-fallback = false # ✅ 始终使用沙盒，失败不重复
+EOF
+                fi
+            }
+            function ensure_nixbld_group(){
+                if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
+                    # 1. 给普通用户添加nixbld组（确保配置层面添加）
+                    say "给普通用户添加nixbld组..."
+                    use_sudo usermod -aG nixbld "$USER_NAME"
+
+                    # 2. 验证：普通用户的组配置是否添加成功（/etc/group层面）
+                    if ! id -nG "$USER_NAME" | grep -qw "nixbld"; then
+                        echo "❌ 给 $USER_NAME 添加nixbld组失败，请手动检查！"
+                        exit 1
+                    fi
+
+                    # 3. 验证：当前进程是否加载了nixbld组（缓存层面）
+                    # 注意：这里查的是当前执行脚本的用户（比如root/sudo），如果是普通用户执行则查$USER
+                    if ! id -nG "$USER_NAME" | grep -qw "nixbld" && [ "$GROUP_REFRESHED" -ne 1 ]; then
+                        echo "🔄 nixbld组已添加，重启脚本使组生效..."
+                        export GROUP_REFRESHED=1
+                        exec "$SHELL" "$(realpath "$0")" "$@"  # 重启主脚本（必生效）
+                    fi
+                    echo "✅ nixbld组已生效，$USER_NAME 所在组：$(id -nG $USER_NAME)"
+                fi
+            }
+            function daemon_reload(){
+                if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
+                    say "重新加载 systemd 配置..."
+                    sudo systemctl daemon-reload
+
+                    say "重启 nix-daemon..."
+                    # 修复：使用 restart 确保完全重启，而不是 stop + start
+                    use_sudo systemctl restart nix-daemon.service
+
+                    say "等待 nix-daemon 就绪..."
+                    while ! use_sudo systemctl is-active --quiet nix-daemon.service; do sleep 1; done
+
+                    # 修复：验证配置前先 source 环境变量
+                    say "加载环境变量..."
+                    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+                        source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                    fi
+
+                    say "验证配置..."
+                    nix config show | grep -i "builders-use-substitutes = true"
+
+                    say "验证配置..."
+                    # 使用 nix config check 或直接测试命令
+                    if ! nix store ping 2>/dev/null; then
+                        warn "nix daemon 可能未正确响应"
+                    fi
+                    say "验证配置完成..."
+                    # say "加载环境变量..."
+                    # # source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+                    # # source /etc/profile.d/nix.sh 2>/dev/null || true
+                    # source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                    # source /etc/profile.d/nix.sh
+                fi
+            }
+            edit_nix_config
+            ensure_nixbld_group
+            # clear_cache # 在执行nix config show前清除缓存和配置
+            fix_cache_permissions
+            daemon_reload
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function choose_install_flake(){
+    case "$OS_TYPE" in
+        nixos)
+            : # 无操作，NixOS默认应用flake配置
+            ;;
+        linux)
+            read -p "应用flake配置？(Y/N，默认Y) " -r
+            if [[ $REPLY =~ ^[Yy]$ ]] || [ -z $REPLY ]; then # (Y/N，默认Y)
+                say "应用flake配置..."
+            else
+                say "不应用flake配置..."
+                exit 0
+            fi
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function cpu_detect(){
+    case "$OS_TYPE" in
+        nixos)
+            ;;
+        linux)
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function gpu_detect(){
+    case "$OS_TYPE" in
+        nixos)
+            ;;
+        linux)
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function virtualization_detect(){
+    case "$OS_TYPE" in
+        nixos)
+            ;;
+        linux)
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function hardware_config_generate(){
+    case "$OS_TYPE" in
+        nixos)
+            ;;
+        linux)
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function flake_load(){
+    case "$OS_TYPE" in
+        nixos)
+            warn "已复制当前目录下的flake配置到/etc/nixos/"
+            use_sudo cp -r ./* /etc/nixos/
+            ;;
+        linux)
+            TARGET_DIR=$USER_HOME/.config/home-manager
+            mkdir -p "$TARGET_DIR"
+            warn "已复制当前目录下的flake配置到 $TARGET_DIR"
+            cp -r ./* "$TARGET_DIR"
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function flake_apply(){
+    case "$OS_TYPE" in
+        nixos)
+            if [ "$IS_LIVE_CD" = true ]; then
+                warn "NixOS Live CD环境，正在使用flake配置安装系统"
+                USER=$USER_NAME use_sudo nixos-install --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/ --impure
+            else
+                warn "NixOS环境，正在应用flake配置"
+                USER=$USER_NAME use_sudo nixos-rebuild switch --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/ --impure
+                # USER=$USER_NAME use_sudo nixos-rebuild switch --option extra-substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://cache.nixos.org" --flake /etc/nixos/ --impure
+            fi
+            ;;
+        linux)
+            if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
+                warn "多用户环境，正在应用flake配置"
+                su - "$USER_NAME" -c "USER=$USER_NAME HOME=$USER_HOME nix run nixpkgs#home-manager -- switch --flake $USER_HOME/.config/home-manager --impure -b backup"
+            else
+                warn "单用户环境，正在应用flake配置"
+                USER=$USER_NAME HOME=$USER_HOME nix run nixpkgs#home-manager -- switch --flake $USER_HOME/.config/home-manager --impure -b backup
+            fi
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function congratulate(){
+    echo "完成！"
+    case "$OS_TYPE" in
+        nixos)
+            use_sudo nix --option extra-substituters "$USING_SUBSTITUTERS" run nixpkgs#hello
+            ;;
+        linux)
+            if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
+                su - "$USER_NAME" -c "USER=$USER_NAME HOME=$USER_HOME nix run nixpkgs#hello"
+            else
+                nix run nixpkgs#hello
+            fi
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function clear_cache(){
+    # 删除所有缓存和单用户配置，确保脚本执行后可用
+    if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
+        if [ -d "/root/.cache/nix" ]; then
+            use_sudo rm -rf /root/.cache/nix
+        fi
+        if [ -d "$USER_HOME/.cache/nix" ]; then
+            use_sudo rm -rf "$USER_HOME/.cache/nix"
+        fi
+        if [ -d "$USER_HOME/.config/nix" ]; then
+            # 会同时删除nix registry，所以不调用这个函数，改成调用fix_cache_permissions函数
+            say "删除 $USER_HOME/.config/nix..."
+            use_sudo rm -rf "$USER_HOME/.config/nix"
+        fi
+    fi
+}
+function fix_cache_permissions(){
+    if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
+        # warn "多用户环境，正在修复缓存权限"
+        local user_group="$(id -gn $USER_NAME 2>/dev/null || echo "$USER_NAME")"
+        # 处理root目录（用use_sudo提权，直接写目录名，-Rf递归）
+        [ -d "/root/.cache/nix" ] && use_sudo chown -Rf root:root /root/.cache/nix 2>/dev/null || true
+        # 处理用户目录（拆分判断，避免一个目录不存在跳过全部，use_sudo提权）
+        [ -d "$USER_HOME/.cache/nix" ] && use_sudo chown -Rf "$USER_NAME:$user_group" "$USER_HOME/.cache/nix" 2>/dev/null || true
+        [ -d "$USER_HOME/.config/nix" ] && use_sudo chown -Rf "$USER_NAME:$user_group" "$USER_HOME/.config/nix" 2>/dev/null || true
+        [ -d "$USER_HOME/.config/home-manager" ] && use_sudo chown -Rf "$USER_NAME:$user_group" "$USER_HOME/.config/home-manager" 2>/dev/null || true
+    fi
+}
+main(){
     init
-    echo ""
-    echo "========= 安装nix及相关工具curl、xz、git、pciutils =========="
-    nix_install
-    # 让脚本生成配置适应当前硬件环境
-    echo "===== 正在进行硬件环境检测 ====="
-    hardware_detect
-    echo "===== 正在应用配置 ====="
-    install
+    nix_channel
+    partition_disk
+    pre_program_install
+    check_nix_install
+    nix_config
+    nix_channel
+    choose_install_flake
+    cpu_detect
+    gpu_detect
+    virtualization_detect
+    hardware_config_generate
+    flake_load
+    flake_apply
+    congratulate
+    # clear_cache
+    fix_cache_permissions
 }
 main
