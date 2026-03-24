@@ -6,7 +6,7 @@ USING_SUBSTITUTERS="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store http
 
 export NIX_CONFIG="experimental-features = nix-command flakes
 substituters = $USING_SUBSTITUTERS"
-export NIX_SUBSTITUTERS="$USING_SUBSTITUTERS"
+export NIX_SUBSTITUTERS="$USING_SUBSTITUTERS" # 此环境变量导出是ai写的，效果未验证
 
 BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz"
 # BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz"
@@ -520,7 +520,7 @@ EOF
                     fi
 
                     say "验证配置..."
-                    nix config show | grep -i "builders-use-substitutes = true"
+                    nix config show | grep trusted-users
 
                     say "验证配置..."
                     # 使用 nix config check 或直接测试命令
@@ -661,6 +661,39 @@ function flake_apply(){
                 warn "NixOS环境，正在应用flake配置"
                 use_sudo nixos-rebuild switch --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/ --impure
                 # use_sudo nixos-rebuild switch --option extra-substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://cache.nixos.org" --flake /etc/nixos/ --impure
+                function daemon_reload(){
+                    say "重新加载 systemd 配置..."
+                    sudo systemctl daemon-reload
+
+                    say "重启 nix-daemon..."
+                    # 修复：使用 restart 确保完全重启，而不是 stop + start
+                    use_sudo systemctl restart nix-daemon.service
+
+                    say "等待 nix-daemon 就绪..."
+                    while ! use_sudo systemctl is-active --quiet nix-daemon.service; do sleep 1; done
+
+                    # 修复：验证配置前先 source 环境变量
+                    say "加载环境变量..."
+                    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+                        source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                    fi
+
+                    say "验证配置..."
+                    nix config show | grep trusted-users
+
+                    say "验证配置..."
+                    # 使用 nix config check 或直接测试命令
+                    if ! nix store ping 2>/dev/null; then
+                        warn "nix daemon 可能未正确响应"
+                    fi
+                    say "验证配置完成..."
+                    # say "加载环境变量..."
+                    # # source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
+                    # # source /etc/profile.d/nix.sh 2>/dev/null || true
+                    # source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                    # source /etc/profile.d/nix.sh
+                }
+                # daemon_reload
             fi
             ;;
         linux)

@@ -74,7 +74,7 @@
           # nixos版本配置
           myNixosVersion = "25.11";
           # 当前用户名（优先使用 环境变量中的用户名；不支持时回退到 default-user）
-          # username =
+          # myUsername =
           #   let
           #     sudoUser = builtins.getEnv "SUDO_USER";
           #     normalUser = builtins.getEnv "USER";
@@ -82,21 +82,21 @@
           #   if sudoUser != "" then sudoUser          # 1. sudo执行时
           #   else if normalUser != "" then normalUser # 2. 普通执行时
           #   else "root";                             # 3. root执行时
-          userName = builtins.getEnv "USER"; # root执行为root，其他为用户名
+          myUsername = builtins.getEnv "USER"; # root执行为root，其他为用户名 (脚本提供一直是用户名)
         in
         {
-          homeConfigurations."${userName}" = home-manager.lib.homeManagerConfiguration {
+          homeConfigurations."${myUsername}" = home-manager.lib.homeManagerConfiguration {
             inherit pkgs;
-            extraSpecialArgs = { inherit inputs userName myNixosVersion; };
+            extraSpecialArgs = { inherit inputs myUsername myNixosVersion; };
             modules = [
               { nixpkgs.config.allowUnfree = true; } # TODO: 可以修改
               ./config/home-config.nix
 
             ];
           };
-          # darwinConfigurations.${userName} = nix-darwin.lib.darwinSystem {
+          # darwinConfigurations.${myUsername} = nix-darwin.lib.darwinSystem {
           #   inherit pkgs;
-          #   extraSpecialArgs = { inherit inputs userName myNixosVersion; };
+          #   extraSpecialArgs = { inherit inputs myUsername myNixosVersion; };
           #   modules = [
           #     { nixpkgs.config.allowUnfree = true; }
           #     ./config/home-config.nix
@@ -104,9 +104,11 @@
           # };
           nixosConfigurations."${hostname}" = nixpkgs.lib.nixosSystem {
             inherit system;
-            specialArgs = { inherit inputs userName myNixosVersion; };
+            specialArgs = { inherit inputs myUsername myNixosVersion; };
             modules = [
-              ./config/nixos-config.nix
+              ./config/nix-settings.nix
+              # ./config/nixos-config.nix # 使用此项目配置
+              /etc/nixos/configuration.nix # 使用系统配置
               /etc/nixos/hardware-configuration.nix
               { nixpkgs.config.allowUnfree = true; } # TODO: 可以修改
               home-manager.nixosModules.home-manager
@@ -114,12 +116,11 @@
                 home-manager = {
                   useGlobalPkgs = true;
                   useUserPackages = true;
-                  extraSpecialArgs = { inherit inputs userName myNixosVersion; };
-                  users.${userName} = {
+                  extraSpecialArgs = { inherit inputs myUsername myNixosVersion; };
+                  users.${myUsername} = {
                     imports =
                       [
                         ./config/home-config.nix
-                        ./config/nix-settings.nix
                       ];
                   };
                 };

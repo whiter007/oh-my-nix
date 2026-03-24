@@ -1,5 +1,5 @@
 # 用户编辑的主入口文件
-{ config, pkgs, lib, username, myNixosVersion, ... }:
+{ config, pkgs, lib, myUsername, myNixosVersion, ... }:
 
 let
   modulesPath = ../nixos-modules;

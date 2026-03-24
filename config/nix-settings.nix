@@ -1,10 +1,8 @@
-{ lib, ... }:
+{ config, pkgs, lib, myUsername, myNixosVersion, ... }:
 
-{
-  # Nix Configuration
-  nix.settings = {
-    experimental-features = [ "nix-command" "flakes" ]; # ✅ 启用flakes特性
-    substituters = lib.mkForce [
+let
+  cache =
+    [
       "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store"
       "https://mirrors.cqupt.edu.cn/nix-channels/store"
       "https://mirrors.ustc.edu.cn/nix-channels/store"
@@ -13,7 +11,14 @@
       "https://numtide.cachix.org"
       "https://devenv.cachix.org"
     ];
-    # trusted-substituters = substituters;
+in
+{
+  # Nix Configuration
+  nix.settings = {
+    experimental-features = [ "nix-command" "flakes" ]; # ✅ 启用flakes特性
+    substituters = lib.mkForce cache;
+    trusted-substituters = cache;
+    trusted-users = [ myUsername "root" ];
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="

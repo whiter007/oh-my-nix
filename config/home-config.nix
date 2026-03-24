@@ -1,4 +1,4 @@
-{ config, pkgs, lib, username, myNixosVersion, ... }:
+{ config, pkgs, lib, myUsername, myNixosVersion, ... }:
 
 let
   modulesPath = ../home-modules;
