@@ -90,7 +90,7 @@
             extraSpecialArgs = { inherit inputs userName myNixosVersion; };
             modules = [
               { nixpkgs.config.allowUnfree = true; } # TODO: 可以修改
-              ./config/home.nix
+              ./config/home-config.nix
 
             ];
           };
@@ -99,15 +99,14 @@
           #   extraSpecialArgs = { inherit inputs userName myNixosVersion; };
           #   modules = [
           #     { nixpkgs.config.allowUnfree = true; }
-          #     ./config/home.nix
+          #     ./config/home-config.nix
           #   ];
           # };
           nixosConfigurations."${hostname}" = nixpkgs.lib.nixosSystem {
             inherit system;
             specialArgs = { inherit inputs userName myNixosVersion; };
             modules = [
-              # ./config/nixos.nix
-              ./configuration.nix
+              ./config/nixos-config.nix
               /etc/nixos/hardware-configuration.nix
               { nixpkgs.config.allowUnfree = true; } # TODO: 可以修改
               home-manager.nixosModules.home-manager
@@ -119,7 +118,7 @@
                   users.${userName} = {
                     imports =
                       [
-                        ./config/home.nix
+                        ./config/home-config.nix
                         ./config/nix-settings.nix
                       ];
                   };

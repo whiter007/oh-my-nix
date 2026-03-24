@@ -1,13 +1,15 @@
 #!/bin/bash
 set -eo pipefail
-disko_file_path="./config/disk-config.nix"
-
-export NIX_CONFIG="experimental-features = nix-command flakes
-substituters = https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store"
+disko_file_path="./config/disko-config.nix"
 
 USING_SUBSTITUTERS="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://mirror.sjtu.edu.cn/nix-channels/store https://mirrors.cqupt.edu.cn/nix-channels/store https://cache.nixos.org"
 
-BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz"
+export NIX_CONFIG="experimental-features = nix-command flakes
+substituters = $USING_SUBSTITUTERS"
+export NIX_SUBSTITUTERS="$USING_SUBSTITUTERS"
+
+BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz"
+# BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz"
 
 function init(){
     function prelude_func(){
@@ -172,12 +174,21 @@ function init(){
         fi
         USER_HOME=$(eval echo ~"$USER_NAME")
     }
-    # 让普通用户以sudo权限执行
+    # 让普通用户以sudo权限执行（显式传递关键环境变量）
     function use_sudo(){
         if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
-            sudo -E "$@"  # 加引号，保留参数完整性, -E 保留环境变量
+            # 显式传递 USER、HOME、NIX_CONFIG 等核心变量，解决权限/目录归属问题
+            sudo -E \
+                USER="$USER_NAME" \
+                HOME="$USER_HOME" \
+                NIX_CONFIG="${NIX_CONFIG:-}" \
+                "$@"  # 加引号，保留参数完整性
         else
-            "$@"          # 加引号，保留参数完整性
+            # 已是root/sudo，直接执行（仍显式传递变量确保一致性）
+            USER="$USER_NAME" \
+            HOME="$USER_HOME" \
+            NIX_CONFIG="${NIX_CONFIG:-}" \
+            "$@"
         fi
     }
     function use_normal(){
@@ -238,31 +249,26 @@ function nix_channel(){
             # else
             #     nix registry add nixpkgs $BINARY_URL
             # fi
+            say "正在添加 Nix 仓库..."
+            use_normal nix registry add nixpkgs $BINARY_URL
             use_sudo nix registry add nixpkgs $BINARY_URL
             # nix registry add nixpkgs $BINARY_URL
             ;;
         linux)
             if [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then # 多用户安装
-                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh # 不加载的话安装完成后无法在当前终端立即使用nix命令
                 say "正在添加 Nix 仓库..."
                 if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
-                    nix registry add nixpkgs $BINARY_URL
-                    su - "$USER_NAME" -c "USER=$USER_NAME HOME=$USER_HOME nix registry add nixpkgs $BINARY_URL"
+                    nix registry add nixpkgs $BINARY_URL # 给root或者sudo用户添加仓库
+                    su - "$USER_NAME" -c "USER=$USER_NAME HOME=$USER_HOME nix registry add nixpkgs $BINARY_URL" # 给普通用户添加仓库
                 else
-                    nix registry add nixpkgs $BINARY_URL
+                    nix registry add nixpkgs $BINARY_URL # 给普通用户添加仓库，这里可能不管root
                 fi
             elif [ -f $USER_HOME/.nix-profile/etc/profile.d/nix.sh ]; then # 单用户安装
-                source $USER_HOME/.nix-profile/etc/profile.d/nix.sh
+                source $USER_HOME/.nix-profile/etc/profile.d/nix.sh # 不加载的话安装完成后无法在当前终端立即使用nix命令
                 say "正在添加 Nix 仓库..."
-                nix registry add nixpkgs $BINARY_URL
+                nix registry add nixpkgs $BINARY_URL # 给普通用户添加仓库，单用户安装不需要管root
             fi
-            # if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
-            #     say "添加 NixOS 仓库..."
-            #     use_sudo nix registry add nixpkgs $BINARY_URL
-            # elif [ "$IS_SINGLE_USER_INSTALLED" = true ]; then
-            #     say "添加 NixOS 仓库..."
-            #     use_normal nix registry add nixpkgs $BINARY_URL
-            # fi
             ;;
         darwin)
             ;;
@@ -278,11 +284,8 @@ function partition_disk(){
             say "已挂载分区"
         else
             say "未挂载任何设备，正在分区..."
-            if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
-                sudo -E nix run nixpkgs#disko -- --mode disko $disko_file_path
-            else
-                nix run nixpkgs#disko -- --mode disko $disko_file_path
-            fi
+            # use_sudo nix --option substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz disko
+            use_sudo nix --option substituters "$USING_SUBSTITUTERS" run nixpkgs#disko -- --mode disko $disko_file_path
         fi
     fi
 }
@@ -291,18 +294,15 @@ function pre_program_install(){
         nixos)
             if !(check_cmd git); then
                 warn "git command not found"
-                use_sudo nix --option extra-substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz git
+                # use_sudo nix --option substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz git
+                use_sudo nix --option substituters "$USING_SUBSTITUTERS" profile add nixpkgs#git
             else
                 say "git command found"
             fi
             if !(check_cmd lspci); then
                 warn "lspci command not found"
-                # if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
-                #     sudo -E nix profile add nixpkgs#pciutils
-                # else
-                #     nix profile add nixpkgs#pciutils
-                # fi
-                use_sudo nix --option extra-substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz pciutils
+                # use_sudo nix --option substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz pciutils
+                use_sudo nix --option substituters "$USING_SUBSTITUTERS" profile add nixpkgs#pciutils
             else
                 say "lspci command found"
             fi
@@ -550,6 +550,13 @@ EOF
 function choose_install_flake(){
     case "$OS_TYPE" in
         nixos)
+            read -p "应用flake配置？(Y/N，默认Y) " -r
+            if [[ $REPLY =~ ^[Yy]$ ]] || [ -z $REPLY ]; then # (Y/N，默认Y)
+                say "应用flake配置..."
+            else
+                say "不应用flake配置..."
+                exit 0
+            fi
             : # 无操作，NixOS默认应用flake配置
             ;;
         linux)
@@ -618,7 +625,17 @@ function hardware_config_generate(){
 function flake_load(){
     case "$OS_TYPE" in
         nixos)
+            # if [ "$IS_LIVE_CD" = true ]; then
+            #     warn "已复制当前目录下的flake配置到/mnt/etc/nixos/"
+            #     use_sudo mkdir -p /etc/nixos/
+            #     use_sudo cp -r ./* /etc/nixos/
+            # else
+            #     warn "已复制当前目录下的flake配置到/etc/nixos/"
+            #     use_sudo mkdir -p /etc/nixos/
+            #     use_sudo cp -r ./* /etc/nixos/
+            # fi
             warn "已复制当前目录下的flake配置到/etc/nixos/"
+            use_sudo mkdir -p /etc/nixos/
             use_sudo cp -r ./* /etc/nixos/
             ;;
         linux)
@@ -638,11 +655,12 @@ function flake_apply(){
         nixos)
             if [ "$IS_LIVE_CD" = true ]; then
                 warn "NixOS Live CD环境，正在使用flake配置安装系统"
-                USER=$USER_NAME use_sudo nixos-install --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/ --impure
+                use_sudo nixos-generate-config --dir /etc/nixos/
+                use_sudo nixos-install --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/#nixos --impure
             else
                 warn "NixOS环境，正在应用flake配置"
-                USER=$USER_NAME use_sudo nixos-rebuild switch --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/ --impure
-                # USER=$USER_NAME use_sudo nixos-rebuild switch --option extra-substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://cache.nixos.org" --flake /etc/nixos/ --impure
+                use_sudo nixos-rebuild switch --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/ --impure
+                # use_sudo nixos-rebuild switch --option extra-substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://cache.nixos.org" --flake /etc/nixos/ --impure
             fi
             ;;
         linux)
@@ -709,7 +727,7 @@ function fix_cache_permissions(){
 }
 main(){
     init
-    nix_channel
+    # nix_channel
     partition_disk
     pre_program_install
     check_nix_install

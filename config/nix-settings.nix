@@ -5,12 +5,15 @@
   nix.settings = {
     experimental-features = [ "nix-command" "flakes" ]; # ✅ 启用flakes特性
     substituters = lib.mkForce [
-      "https://mirrors.ustc.edu.cn/nix-channels/store"
       "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store"
+      "https://mirrors.cqupt.edu.cn/nix-channels/store"
+      "https://mirrors.ustc.edu.cn/nix-channels/store"
+      "https://mirror.sjtu.edu.cn/nix-channels/store"
       "https://cache.nixos.org"
       "https://numtide.cachix.org"
       "https://devenv.cachix.org"
     ];
+    # trusted-substituters = substituters;
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       "numtide.cachix.org-1:2ps1kLBUWjxIneOy1Ik6cQjb41X0iXVXeHigGmycPPE="
