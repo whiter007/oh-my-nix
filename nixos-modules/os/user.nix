@@ -7,6 +7,7 @@
         home = "/home/${userName}";
         description = "${userName}";
         extraGroups = [ "networkmanager" "wheel" ];
+        initialPassword = "root";  # 临时密码，首次登录后会要求更改
         packages = with pkgs; [
         # thunderbird
         ];

@@ -28,14 +28,14 @@
       inputs.nixpkgs-lib.follows = "nixpkgs"; # 依赖当前flake的输入
       # inputs.nixpkgs-lib.url = ""; # 还没找到镜像源
     };
-    flake-utils = {
-      # url = "github:numtide/flake-utils"; # ⚠️ 会从github下载
-      url = "git+https://gitcode.com/gh_mirrors/fl/flake-utils.git"; # ✅ 国内源
-    };
-    flake-utils-plus = {
-      # url = "github:gytis-ivaskevicius/flake-utils-plus"; # ⚠️ 会从github下载
-      url = "git+https://gitcode.com/gh_mirrors/fl/flake-utils-plus.git"; # ✅ 国内源
-    };
+    # flake-utils = {
+    #   # url = "github:numtide/flake-utils"; # ⚠️ 会从github下载
+    #   url = "git+https://gitcode.com/gh_mirrors/fl/flake-utils.git"; # ✅ 国内源
+    # };
+    # flake-utils-plus = {
+    #   # url = "github:gytis-ivaskevicius/flake-utils-plus"; # ⚠️ 会从github下载
+    #   url = "git+https://gitcode.com/gh_mirrors/fl/flake-utils-plus.git"; # ✅ 国内源
+    # };
     # sops-nix = {
     #   url = "github:Mic92/sops-nix"; # 默认配置（但不直接使用）
     #   inputs.nixpkgs.follows = "nixpkgs"; # 强制使用nixpkgs里的包覆盖
