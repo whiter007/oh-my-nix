@@ -727,7 +727,7 @@ function fix_cache_permissions(){
 }
 main(){
     init
-    # nix_channel
+    nix_channel # nixos得先加仓库
     partition_disk
     pre_program_install
     check_nix_install
