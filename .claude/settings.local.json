@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /mnt/d/NixOS/nix/oh-my-nix/nixos-modules/**/*.nix)",
+      "Bash(wc:*)",
+      "Bash(bash -x ./my-nix.sh)",
+      "Bash(tee /tmp/my-nix-debug.log)",
+      "Read(//tmp/**)",
+      "Bash(bash -n lib/detect.sh)",
+      "Bash(for f:*)",
+      "Bash(do bash:*)",
+      "Bash(echo \"PASS: $f\")",
+      "Bash(echo \"FAIL: $f\")",
+      "Bash(done)",
+      "Bash(timeout 15 bash ./my-nix.sh)"
+    ]
+  }
+}

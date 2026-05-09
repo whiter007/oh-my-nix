@@ -13,12 +13,12 @@ in
       (modulesPath + /virtualization/option.nix)
     ];
 
-  # my = {
-  #   # 桌面环境选择
-  #   desktop = {
-  #     type = "hyprland"; # hyprland | gnome(default) | minimal | none
-  #     displayServer = "wayland"; # x11(default) or wayland
-  #   };
+  my = {
+    # 桌面环境选择
+    desktop = {
+      enable = true;
+      type = "gnome"; # hyprland | gnome(default) | minimal | none
+    };
   #   # 硬件配置
   #   hardware = {
   #     cpu = {
@@ -52,7 +52,7 @@ in
   #       variant = "dark";
   #     };
   #   };
-  # };
+  };
 
   system.stateVersion = "${myNixosVersion}";
 }

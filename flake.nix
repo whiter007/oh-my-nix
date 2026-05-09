@@ -106,7 +106,7 @@
             inherit system;
             specialArgs = { inherit inputs myUsername myNixosVersion; };
             modules = [
-              ./config/nix-settings.nix
+              ./config/nix-settings.nix # 不要移动到home-manager配置中，在nixos中会不生效
               # ./config/nixos-config.nix # 使用此项目配置
               /etc/nixos/configuration.nix # 使用系统配置
               /etc/nixos/hardware-configuration.nix

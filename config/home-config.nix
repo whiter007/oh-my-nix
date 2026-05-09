@@ -22,10 +22,11 @@ in
       # (modulesPath + /development/editer/neovim.nix) # 终端编辑器 444.5 MiB
       # (modulesPath + /development/editer/lazy-neovim.nix) # 终端编辑器
       # (modulesPath + /development/ai/gemini-cli.nix) # 终端AI助手 287.6 MiB
-      # (modulesPath + /development/ai/claude-code.nix) # 终端AI助手 709.7 MiB
-      # (modulesPath + /development/ai/qwen-code.nix) # 终端AI助手 180.9 MiB
+      (modulesPath + /development/ai/claude-code.nix) # 终端AI助手 709.7 MiB
+      (modulesPath + /development/ai/qwen-code.nix) # 终端AI助手 180.9 MiB
       # (modulesPath + /development/ai/aider.nix) # 终端AI助手 1.8 GiB 使用openrouter
-      # (modulesPath + /development/ai/opencode.nix) # 终端AI助手 135.9 MiB
+      (modulesPath + /development/ai/opencode.nix) # 终端AI助手 135.9 MiB
       # (modulesPath + /development/ai/ollama.nix) # 本地AI服务 53.7 MiB
     ];
+  home.packages = [ pkgs.mcp-nixos ];
 }

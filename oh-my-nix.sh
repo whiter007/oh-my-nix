@@ -1,12 +1,12 @@
 #!/bin/bash
 set -eo pipefail
-disko_file_path="./config/disko-config.nix"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+disko_file_path="$SCRIPT_DIR/config/disko-config.nix"
 
 USING_SUBSTITUTERS="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://mirror.sjtu.edu.cn/nix-channels/store https://mirrors.cqupt.edu.cn/nix-channels/store https://cache.nixos.org"
 
 export NIX_CONFIG="experimental-features = nix-command flakes
 substituters = $USING_SUBSTITUTERS"
-export NIX_SUBSTITUTERS="$USING_SUBSTITUTERS" # 此环境变量导出是ai写的，效果未验证
 
 BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz"
 # BINARY_URL="https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz"
@@ -239,56 +239,6 @@ function init(){
     say "IS_ROOT_USER:$IS_ROOT_USER"
     say "IS_SUDO_USER:$IS_SUDO_USER"
 }
-function nix_channel(){
-    case "$OS_TYPE" in
-        nixos)
-            # say "正在添加 NixOS 仓库..."
-            # if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
-            #     sudo -E nix registry add nixpkgs $BINARY_URL
-            #     nix registry add nixpkgs $BINARY_URL
-            # else
-            #     nix registry add nixpkgs $BINARY_URL
-            # fi
-            say "正在添加 Nix 仓库..."
-            use_normal nix registry add nixpkgs $BINARY_URL
-            use_sudo nix registry add nixpkgs $BINARY_URL
-            # nix registry add nixpkgs $BINARY_URL
-            ;;
-        linux)
-            if [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then # 多用户安装
-                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh # 不加载的话安装完成后无法在当前终端立即使用nix命令
-                say "正在添加 Nix 仓库..."
-                if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
-                    nix registry add nixpkgs $BINARY_URL # 给root或者sudo用户添加仓库
-                    su - "$USER_NAME" -c "USER=$USER_NAME HOME=$USER_HOME nix registry add nixpkgs $BINARY_URL" # 给普通用户添加仓库
-                else
-                    nix registry add nixpkgs $BINARY_URL # 给普通用户添加仓库，这里可能不管root
-                fi
-            elif [ -f $USER_HOME/.nix-profile/etc/profile.d/nix.sh ]; then # 单用户安装
-                source $USER_HOME/.nix-profile/etc/profile.d/nix.sh # 不加载的话安装完成后无法在当前终端立即使用nix命令
-                say "正在添加 Nix 仓库..."
-                nix registry add nixpkgs $BINARY_URL # 给普通用户添加仓库，单用户安装不需要管root
-            fi
-            ;;
-        darwin)
-            ;;
-        *)
-            ;;
-    esac
-}
-function partition_disk(){
-    if [ "$OS_TYPE" = nixos ] && [ "$IS_LIVE_CD" = true ]; then
-        say "当前是 NixOS Live CD"
-        local mounts=$(grep -E '^/dev/(sd|nvme|vd|mmcblk|hd|xvd)' /proc/mounts | grep -v 'loop')
-        if [ -n "$mounts" ]; then
-            say "已挂载分区"
-        else
-            say "未挂载任何设备，正在分区..."
-            # use_sudo nix --option substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz disko
-            use_sudo nix --option substituters "$USING_SUBSTITUTERS" run nixpkgs#disko -- --mode disko $disko_file_path
-        fi
-    fi
-}
 function pre_program_install(){
     case "$OS_TYPE" in
         nixos)
@@ -324,20 +274,21 @@ function pre_program_install(){
             [ ${#pkgs[@]} -eq 0 ] && { echo "所有工具均已安装"; return 0; }
             warn "需要安装: ${pkgs[*]}"
 
-            # 4. 快速匹配包管理器（一行完成）
-            check_cmd oma && pm="oma" && install_cmd="oma install -y"
-            check_cmd apt && pm="apt" && install_cmd="apt install -y"
-            check_cmd yum && pm="yum" && install_cmd="yum install -y"
-            check_cmd dnf && pm="dnf" && install_cmd="dnf install -y"
-            check_cmd apk && pm="apk" && install_cmd="apk install -y"
-            check_cmd pacman && pm="pacman" && install_cmd="pacman -S --noconfirm"
-            check_cmd zypper && pm="zypper" && install_cmd="zypper install -y"
+            # 4. 匹配包管理器（按优先级，首次命中即停止）
+            if check_cmd oma; then pm="oma"; install_cmd="oma install -y"
+            elif check_cmd apt; then pm="apt"; install_cmd="apt install -y"
+            elif check_cmd dnf; then pm="dnf"; install_cmd="dnf install -y"
+            elif check_cmd yum; then pm="yum"; install_cmd="yum install -y"
+            elif check_cmd pacman; then pm="pacman"; install_cmd="pacman -S --noconfirm"
+            elif check_cmd zypper; then pm="zypper"; install_cmd="zypper install -y"
+            elif check_cmd apk; then pm="apk"; install_cmd="apk add"
+            fi
 
             # 5. 处理apt特殊包名 + 执行安装
             [ "$pm" = "apt" ] && pkgs=(${pkgs[@]/xz/xz-utils})  # 替换xz为xz-utils
             [ "$pm" = "oma" ] && echo "安装慢可先执行: oma mirror"  # oma特殊提示
             if [ -n "$install_cmd" ]; then
-                use_sudo $install_cmd ${pkgs[*]}
+                use_sudo $install_cmd "${pkgs[@]}"
             else
                 echo "无支持的包管理器，请手动安装: ${pkgs[*]}" && return 1
             fi
@@ -412,13 +363,13 @@ function check_nix_install(){
                 say "nix command found (多用户安装)"
                 source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
                 IS_MULTI_USER_INSTALLED=true
-            elif [ -f $USER_HOME/.nix-profile/etc/profile.d/nix.sh ]; then # 单用户安装
+            elif [ -f "$USER_HOME/.nix-profile/etc/profile.d/nix.sh" ]; then # 单用户安装
                 if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
                     warn "正在以普通用户重新执行脚本，单用户需要以普通用户执行"
                     downgrade_privilege
                 fi
                 say "nix command found (单用户安装)"
-                source $USER_HOME/.nix-profile/etc/profile.d/nix.sh
+                source "$USER_HOME/.nix-profile/etc/profile.d/nix.sh"
                 IS_SINGLE_USER_INSTALLED=true
             else
                 warn "nix command not found"
@@ -445,7 +396,7 @@ function nix_config(){
                     use_sudo chmod 755 $_nix_config_dir  # 显式设置权限
                     use_sudo tee $_nix_config_dir/nix.conf << EOF
 experimental-features = nix-command flakes # ✅ 启用flakes特性
-trusted-users = root $USER_NAME # ✅ 多用户安装时，信任所有nix用户
+trusted-users = root $USER_NAME # ✅ 多用户安装时，信任root和当前用户
 substituters = $USING_SUBSTITUTERS # ✅ 使用清华和中科大镜像作为二进制缓存源
 trusted-substituters = $USING_SUBSTITUTERS # ✅ 多用户安装时，信任所有二进制源
 trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= mirrors.tuna.tsinghua.edu.cn/nix-channels/store:rSzv032o86Rxxhl6/7aYRl0v56Kza+4+4G8q0aT+28A= mirrors.ustc.edu.cn/nix-channels/store:o9ien6A6Y75/32Jdl3lZF52E6hDUmD+86L948YH9QyU= # ✅ 可信任的公钥，用于验证下载的包
@@ -481,24 +432,16 @@ EOF
             }
             function ensure_nixbld_group(){
                 if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
-                    # 1. 给普通用户添加nixbld组（确保配置层面添加）
+                    # 1. 给普通用户添加nixbld组
                     say "给普通用户添加nixbld组..."
                     use_sudo usermod -aG nixbld "$USER_NAME"
 
-                    # 2. 验证：普通用户的组配置是否添加成功（/etc/group层面）
+                    # 2. 验证：普通用户是否已加入nixbld组
                     if ! id -nG "$USER_NAME" | grep -qw "nixbld"; then
                         echo "❌ 给 $USER_NAME 添加nixbld组失败，请手动检查！"
                         exit 1
                     fi
-
-                    # 3. 验证：当前进程是否加载了nixbld组（缓存层面）
-                    # 注意：这里查的是当前执行脚本的用户（比如root/sudo），如果是普通用户执行则查$USER
-                    if ! id -nG "$USER_NAME" | grep -qw "nixbld" && [ "$GROUP_REFRESHED" -ne 1 ]; then
-                        echo "🔄 nixbld组已添加，重启脚本使组生效..."
-                        export GROUP_REFRESHED=1
-                        exec "$SHELL" "$(realpath "$0")" "$@"  # 重启主脚本（必生效）
-                    fi
-                    echo "✅ nixbld组已生效，$USER_NAME 所在组：$(id -nG $USER_NAME)"
+                    echo "✅ nixbld组已生效，$USER_NAME 所在组：$(id -nG "$USER_NAME")"
                 fi
             }
             function daemon_reload(){
@@ -524,7 +467,7 @@ EOF
 
                     say "验证配置..."
                     # 使用 nix config check 或直接测试命令
-                    if ! nix store ping 2>/dev/null; then
+                    if ! nix store ping 2>&1; then
                         warn "nix daemon 可能未正确响应"
                     fi
                     say "验证配置完成..."
@@ -547,25 +490,35 @@ EOF
             ;;
     esac
 }
-function choose_install_flake(){
+function nix_channel(){
     case "$OS_TYPE" in
         nixos)
-            read -p "应用flake配置？(Y/N，默认Y) " -r
-            if [[ $REPLY =~ ^[Yy]$ ]] || [ -z $REPLY ]; then # (Y/N，默认Y)
-                say "应用flake配置..."
-            else
-                say "不应用flake配置..."
-                exit 0
-            fi
-            : # 无操作，NixOS默认应用flake配置
+            # say "正在添加 NixOS 仓库..."
+            # if [ "$IS_ROOT_USER" = false ] && [ "$IS_SUDO_USER" = false ]; then
+            #     sudo -E nix registry add nixpkgs $BINARY_URL
+            #     nix registry add nixpkgs $BINARY_URL
+            # else
+            #     nix registry add nixpkgs $BINARY_URL
+            # fi
+            say "正在添加 Nix 仓库..."
+            use_normal nix registry add nixpkgs $BINARY_URL
+            use_sudo nix registry add nixpkgs $BINARY_URL
+            # nix registry add nixpkgs $BINARY_URL
             ;;
         linux)
-            read -p "应用flake配置？(Y/N，默认Y) " -r
-            if [[ $REPLY =~ ^[Yy]$ ]] || [ -z $REPLY ]; then # (Y/N，默认Y)
-                say "应用flake配置..."
-            else
-                say "不应用flake配置..."
-                exit 0
+            if [ -f "/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh" ]; then # 多用户安装
+                source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh # 不加载的话安装完成后无法在当前终端立即使用nix命令
+                say "正在添加 Nix 仓库..."
+                if [ "$IS_ROOT_USER" = true ] || [ "$IS_SUDO_USER" = true ]; then
+                    nix registry add nixpkgs $BINARY_URL # 给root或者sudo用户添加仓库
+                    su - "$USER_NAME" -c "USER=$USER_NAME HOME=$USER_HOME nix registry add nixpkgs $BINARY_URL" # 给普通用户添加仓库
+                else
+                    nix registry add nixpkgs $BINARY_URL # 给普通用户添加仓库，这里可能不管root
+                fi
+            elif [ -f $USER_HOME/.nix-profile/etc/profile.d/nix.sh ]; then # 单用户安装
+                source $USER_HOME/.nix-profile/etc/profile.d/nix.sh # 不加载的话安装完成后无法在当前终端立即使用nix命令
+                say "正在添加 Nix 仓库..."
+                nix registry add nixpkgs $BINARY_URL # 给普通用户添加仓库，单用户安装不需要管root
             fi
             ;;
         darwin)
@@ -610,11 +563,87 @@ function virtualization_detect(){
             ;;
     esac
 }
+function select_disk(){
+    if [ "$OS_TYPE" = nixos ] && [ "$IS_LIVE_CD" = true ]; then
+        # 获取所有磁盘（类型为 disk）的信息，包括名称、大小、型号
+        mapfile -t disks < <(lsblk -d -o NAME,TYPE,SIZE,MODEL -n 2>/dev/null | awk '$2=="disk" {print $1,$3,$4}')
+
+        # 如果没有找到磁盘，退出
+        if [ ${#disks[@]} -eq 0 ]; then
+            echo "未检测到任何硬盘。"
+            exit 1
+        fi
+
+        # 显示菜单
+        echo "可用的硬盘："
+        lsblk
+        for i in "${!disks[@]}"; do
+            # 提取信息：名称、大小、型号
+            read -r name size model <<< "${disks[$i]}"
+            echo "$((i+1))) /dev/$name - $size - ${model:-未知型号}"
+        done
+
+        # 读取用户选择
+        read -p "请选择硬盘（输入编号）： " choice
+
+        # 验证输入是否为数字且在有效范围内
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#disks[@]} ]; then
+            echo "无效的选择。"
+            exit 1
+        fi
+
+        # 获取所选硬盘的名称
+        selected_name=$(echo "${disks[$((choice-1))]}" | awk '{print $1}')
+        selected_disk="/dev/$selected_name"
+
+        echo "您选择了：$selected_disk"
+    fi
+}
+function partition_disk(){
+    if [ "$OS_TYPE" = nixos ] && [ "$IS_LIVE_CD" = true ]; then
+        say "当前是 NixOS Live CD"
+        local mounts=$(grep -E '^/dev/(sd|nvme|vd|mmcblk|hd|xvd)' /proc/mounts | grep -v 'loop')
+        if [ -n "$mounts" ]; then
+            say "已挂载分区"
+        else
+            say "未挂载任何设备，正在分区..."
+            # use_sudo nix --option substituters "$USING_SUBSTITUTERS" profile add -f https://mirrors.tuna.tsinghua.edu.cn/nix-channels/nixpkgs-unstable/nixexprs.tar.xz disko
+            use_sudo nix --option substituters "$USING_SUBSTITUTERS" run nixpkgs#disko -- --mode disko $disko_file_path
+        fi
+    fi
+}
 function hardware_config_generate(){
     case "$OS_TYPE" in
         nixos)
             ;;
         linux)
+            ;;
+        darwin)
+            ;;
+        *)
+            ;;
+    esac
+}
+function choose_which_flake(){
+    case "$OS_TYPE" in
+        nixos)
+            read -p "应用flake配置？(Y/N，默认Y) " -r
+            if [[ $REPLY =~ ^[Yy]$ ]] || [ -z "$REPLY" ]; then # (Y/N，默认Y)
+                say "应用flake配置..."
+            else
+                say "不应用flake配置..."
+                exit 0
+            fi
+            : # 无操作，NixOS默认应用flake配置
+            ;;
+        linux)
+            read -p "应用flake配置？(Y/N，默认Y) " -r
+            if [[ $REPLY =~ ^[Yy]$ ]] || [ -z "$REPLY" ]; then # (Y/N，默认Y)
+                say "应用flake配置..."
+            else
+                say "不应用flake配置..."
+                exit 0
+            fi
             ;;
         darwin)
             ;;
@@ -636,13 +665,17 @@ function flake_load(){
             # fi
             warn "已复制当前目录下的flake配置到/etc/nixos/"
             use_sudo mkdir -p /etc/nixos/
-            use_sudo cp -r ./* /etc/nixos/
+            shopt -s dotglob
+            use_sudo cp -r ./* /etc/nixos/ 2>/dev/null || true
+            shopt -u dotglob
             ;;
         linux)
             TARGET_DIR=$USER_HOME/.config/home-manager
             mkdir -p "$TARGET_DIR"
             warn "已复制当前目录下的flake配置到 $TARGET_DIR"
-            cp -r ./* "$TARGET_DIR"
+            shopt -s dotglob
+            cp -r ./* "$TARGET_DIR" 2>/dev/null || true
+            shopt -u dotglob
             ;;
         darwin)
             ;;
@@ -661,39 +694,6 @@ function flake_apply(){
                 warn "NixOS环境，正在应用flake配置"
                 use_sudo nixos-rebuild switch --option extra-substituters "$USING_SUBSTITUTERS" --flake /etc/nixos/ --impure
                 # use_sudo nixos-rebuild switch --option extra-substituters "https://mirrors.tuna.tsinghua.edu.cn/nix-channels/store https://mirrors.ustc.edu.cn/nix-channels/store https://cache.nixos.org" --flake /etc/nixos/ --impure
-                function daemon_reload(){
-                    say "重新加载 systemd 配置..."
-                    sudo systemctl daemon-reload
-
-                    say "重启 nix-daemon..."
-                    # 修复：使用 restart 确保完全重启，而不是 stop + start
-                    use_sudo systemctl restart nix-daemon.service
-
-                    say "等待 nix-daemon 就绪..."
-                    while ! use_sudo systemctl is-active --quiet nix-daemon.service; do sleep 1; done
-
-                    # 修复：验证配置前先 source 环境变量
-                    say "加载环境变量..."
-                    if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
-                        source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-                    fi
-
-                    say "验证配置..."
-                    nix config show | grep trusted-users
-
-                    say "验证配置..."
-                    # 使用 nix config check 或直接测试命令
-                    if ! nix store ping 2>/dev/null; then
-                        warn "nix daemon 可能未正确响应"
-                    fi
-                    say "验证配置完成..."
-                    # say "加载环境变量..."
-                    # # source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || true
-                    # # source /etc/profile.d/nix.sh 2>/dev/null || true
-                    # source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-                    # source /etc/profile.d/nix.sh
-                }
-                # daemon_reload
             fi
             ;;
         linux)
@@ -730,22 +730,6 @@ function congratulate(){
             ;;
     esac
 }
-function clear_cache(){
-    # 删除所有缓存和单用户配置，确保脚本执行后可用
-    if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
-        if [ -d "/root/.cache/nix" ]; then
-            use_sudo rm -rf /root/.cache/nix
-        fi
-        if [ -d "$USER_HOME/.cache/nix" ]; then
-            use_sudo rm -rf "$USER_HOME/.cache/nix"
-        fi
-        if [ -d "$USER_HOME/.config/nix" ]; then
-            # 会同时删除nix registry，所以不调用这个函数，改成调用fix_cache_permissions函数
-            say "删除 $USER_HOME/.config/nix..."
-            use_sudo rm -rf "$USER_HOME/.config/nix"
-        fi
-    fi
-}
 function fix_cache_permissions(){
     if [ "$IS_MULTI_USER_INSTALLED" = true ]; then
         # warn "多用户环境，正在修复缓存权限"
@@ -760,21 +744,21 @@ function fix_cache_permissions(){
 }
 main(){
     init
-    nix_channel # nixos得先加仓库
-    partition_disk
     pre_program_install
     check_nix_install
     nix_config
     nix_channel
-    choose_install_flake
     cpu_detect
     gpu_detect
+    select_disk
+    partition_disk
     virtualization_detect
     hardware_config_generate
+    choose_which_flake
     flake_load
     flake_apply
     congratulate
     # clear_cache
     fix_cache_permissions
 }
-main
+main "$@"
